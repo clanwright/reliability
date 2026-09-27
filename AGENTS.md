@@ -1,0 +1,5 @@
+# Reliability project
+
+This is a standalone NixOS recovery executor. The lead owns architecture, integration and delivery; workers edit only assigned files. Provider, secret, deployment, real backup, restore and prune operations require explicit owner authorization. External Apps and Primitives implementations must not be inspected or changed. Their public recovery contract is being requested in https://github.com/clanwright/primitives/issues/1 and https://github.com/clanwright/apps/issues/3.
+
+No secret values, provider account names, real machine topology or credentials in code/docs/test output. Use fake data for tests. No remote/provider operations from workers. Never delete real backup data. Preserve test evidence under ignored .work. Native NixOS/Clan mechanisms first; no backward compatibility with consumer fast/deep API. Test the public interface and real Restic on temporary local repositories; do not mock away all execution. Target Linux runtime, author macOS tooling. No hosted CI or virtual-machine/QEMU tests; use local checks and documented Linux builder when needed. Documentation index is README.md; commands belong in docs/operations.md.
