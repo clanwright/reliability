@@ -1,103 +1,100 @@
 {
   pkgs,
-  self,
   nixosSystem,
 }:
 
 let
   lib = pkgs.lib;
-  evaluated = nixosSystem {
-    system = "x86_64-linux";
-    modules = [
-      self.nixosModules.default
-      ./fixtures-recovery.nix
-      ({ pkgs, ... }: {
-        boot.isContainer = true;
-        system.stateVersion = "25.11";
-        clanwright.recovery.units.notes = {
-          contractVersion = 1;
-          formatVersion = "notes-v1";
-          stateRefs = [ "notes-state" ];
-          captureCommand = "${pkgs.coreutils}/bin/true";
-          validateCommand = "${pkgs.coreutils}/bin/true";
-        };
-        clanwright.reliability = {
-          enable = true;
-          selectedUnits = [ "notes" ];
-          metricsFile = "/var/lib/node_exporter/textfile_collector/reliability.prom";
-          destinations = {
-            primary = {
-              repository = "/tmp/reliability-test-primary";
-              passwordFile = "/run/secrets/reliability-primary";
-              expectedRepositoryId = "synthetic-primary-id";
-            };
-            second = {
-              repository = "s3:example.invalid/test";
-              passwordFile = "/run/secrets/reliability-second";
-              environmentFile = "/run/secrets/reliability-second-env";
-              expectedRepositoryId = "synthetic-second-id";
-            };
-          };
-          policy = {
-            maintenanceEnabled = true;
-            maintenanceDeletionCeiling = 2;
-          };
-        };
-      })
-    ];
-  };
-  cfg = evaluated.config;
-  disabled = nixosSystem {
-    system = "x86_64-linux";
-    modules = [
-      self.nixosModules.default
-      { system.stateVersion = "25.11"; }
-    ];
-  };
+  cfg =
+    (nixosSystem {
+      system = pkgs.stdenv.hostPlatform.system;
+      modules = [
+        ../examples/restic.nix
+        {
+          boot.isContainer = true;
+          system.stateVersion = "25.11";
+        }
+      ];
+    }).config;
+  backups = cfg.services.restic.backups;
   services = cfg.systemd.services;
   timers = cfg.systemd.timers;
-  has = set: id: builtins.hasAttr id set;
-  safe = lib.all (item: item.assertion) cfg.assertions;
+  has = set: name: builtins.hasAttr name set;
+  names = [
+    "primary"
+    "secondary"
+    "primary-structure"
+    "secondary-structure"
+    "primary-full"
+    "secondary-full"
+  ];
+  backupNames = [
+    "primary"
+    "secondary"
+  ];
+  checkNames = [
+    "primary-structure"
+    "secondary-structure"
+    "primary-full"
+    "secondary-full"
+  ];
+  service = name: services."restic-backups-${name}";
+  command = name: builtins.head ((service name).serviceConfig.ExecStart);
 in
-assert safe;
-assert has services "clanwright-reliability-capture";
-assert has services "clanwright-reliability-status";
-assert has timers "clanwright-reliability-status";
-assert lib.hasInfix "--metrics-file /var/lib/node_exporter/textfile_collector/reliability.prom"
-  services.clanwright-reliability-status.serviceConfig.ExecStart;
-assert services.clanwright-reliability-capture.serviceConfig.PrivateNetwork;
+assert lib.all (item: item.assertion) cfg.assertions;
+assert builtins.length (builtins.attrNames backups) == builtins.length names;
+assert lib.all (
+  name:
+  has backups name && has services "restic-backups-${name}" && has timers "restic-backups-${name}"
+) names;
+assert lib.all (name: !backups.${name}.initialize && backups.${name}.pruneOpts == [ ]) names;
+assert lib.all (name: backups.${name}.paths == [ "/srv/backup-input" ]) backupNames;
+assert lib.all (name: backups.${name}.paths == [ ] && backups.${name}.runCheck) checkNames;
+assert lib.all (name: backups.${name}.checkOpts == [ ]) [
+  "primary-structure"
+  "secondary-structure"
+];
+assert lib.all (name: backups.${name}.checkOpts == [ "--read-data" ]) [
+  "primary-full"
+  "secondary-full"
+];
+assert backups.primary.repository != backups.secondary.repository;
+assert backups.primary.passwordFile != backups.secondary.passwordFile;
+assert backups.primary.environmentFile != backups.secondary.environmentFile;
+assert lib.all (
+  name:
+  lib.hasPrefix "/run/" backups.${name}.passwordFile
+  && lib.hasPrefix "/run/" backups.${name}.environmentFile
+) names;
+assert lib.all (
+  name: (service name).serviceConfig.EnvironmentFile == backups.${name}.environmentFile
+) names;
+assert lib.all (
+  name: (service name).environment.RESTIC_PASSWORD_FILE == backups.${name}.passwordFile
+) names;
+assert lib.all (name: builtins.length ((service name).serviceConfig.ExecStart) == 1) names;
+assert lib.all (name: lib.hasInfix " backup " (command name)) backupNames;
+assert lib.all (name: lib.hasInfix " check " (command name)) checkNames;
+assert lib.all (name: !(lib.hasInfix "--read-data" (command name))) [
+  "primary-structure"
+  "secondary-structure"
+];
+assert lib.all (name: lib.hasInfix "--read-data" (command name)) [
+  "primary-full"
+  "secondary-full"
+];
+assert lib.all (
+  name:
+  timers."restic-backups-${name}".timerConfig.OnCalendar == backups.${name}.timerConfig.OnCalendar
+) names;
 assert
-  services.clanwright-reliability-capture.serviceConfig.CapabilityBoundingSet == [
-    "CAP_DAC_READ_SEARCH"
-    "CAP_DAC_OVERRIDE"
-    "CAP_CHOWN"
-    "CAP_FOWNER"
-    "CAP_SETUID"
-    "CAP_SETGID"
-    "CAP_KILL"
-  ];
-assert has services "clanwright-reliability-backup-primary";
-assert has services "clanwright-reliability-backup-second";
-assert has services "clanwright-reliability-check-primary";
-assert has services "clanwright-reliability-read-check-primary";
-assert has services "clanwright-reliability-restore-check-primary";
-assert !(has services "clanwright-reliability-maintenance-primary");
-assert !(has timers "clanwright-reliability-maintenance-primary");
-assert has timers "clanwright-reliability-capture";
-assert has timers "clanwright-reliability-backup-primary";
-assert has timers "clanwright-reliability-read-check-second";
-assert lib.length services.clanwright-reliability-capture.unitConfig.OnSuccess == 2;
-assert !(services.clanwright-reliability-restore-check-primary.serviceConfig.PrivateNetwork);
-assert
-  services.clanwright-reliability-restore-check-primary.serviceConfig.CapabilityBoundingSet == [
-    "CAP_CHOWN"
-    "CAP_SETUID"
-    "CAP_SETGID"
-    "CAP_FOWNER"
-    "CAP_DAC_OVERRIDE"
-    "CAP_DAC_READ_SEARCH"
-  ];
-assert !(has disabled.config.systemd.services "clanwright-reliability-capture");
-pkgs.runCommand "reliability-module-eval" { } ''
+  builtins.length (lib.unique (map (name: backups.${name}.timerConfig.OnCalendar) names))
+  == builtins.length names;
+assert lib.all (
+  name: builtins.any (pkg: pkg.name == "restic-${name}") cfg.environment.systemPackages
+) backupNames;
+assert !(has services "clanwright-reliability-capture");
+assert !(has services "clanwright-reliability-backup-primary");
+pkgs.runCommand "reliability-native-module-eval" { } ''
   touch "$out"
 ''

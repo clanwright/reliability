@@ -1,24 +1,27 @@
 # Reliability
 
-Reliability is the generic NixOS executor for application recovery units. It is
-developed in [clanwright/reliability](https://github.com/clanwright/reliability)
-and licensed under [MIT](LICENSE). This repository owns capture orchestration,
-encrypted Restic destinations, checks, isolated restore validation, maintenance
-guards, and status evidence. It does not own application data formats, provider
-accounts, or a production restore procedure.
+Reliability is a small Nix flake for using [Restic](https://restic.net/) with
+NixOS. It is developed in [clanwright/reliability](https://github.com/clanwright/reliability)
+and licensed under [MIT](LICENSE). `packages.default` provides the pinned
+`pkgs.restic`, and `apps.default` runs that Restic executable. The repository
+also supplies a NixOS example using the native `services.restic.backups` module.
 
-The public recovery-unit declaration is being developed in
-[Primitives issue 1](https://github.com/clanwright/primitives/issues/1).
-[Apps issue 3](https://github.com/clanwright/apps/issues/3) will publish the
-first application-owned units. Reliability consumes their typed declarations;
-Apps and Reliability do not import one another. A standalone user may provide
-compatible declarations, while integration with the official modules depends
-on their released contract. A declared unit alone does not start a backup;
-the installation selects stable unit IDs explicitly.
+Start with [the native configuration example](examples/restic.nix). The
+[architecture](docs/architecture.md) explains what the example does and where
+application consistency belongs. [Operations](docs/operations.md) contains
+verification, commissioning, restore, and retention commands.
+[Security and recovery](docs/security.md) covers credentials, independent
+destinations, and recovery limits.
 
-The [architecture and contract](docs/architecture.md) explain ownership and
-compatibility. [Operations](docs/operations.md) covers local verification,
-commissioning, checks, and maintenance. [Security and recovery](docs/security.md)
-separates Restic retention, provider-protected history, and isolated validation.
-No local evaluation establishes a deployed backup or a usable production
-recovery point. Those require independent evidence from each destination.
+This is a breaking change from the former custom executor. There is no
+`nixosModules.default`, `clanwright.reliability` option tree, or `reliability`
+CLI. Existing repositories and snapshots are not converted or deleted. Keep
+their credentials, configuration, and a compatible pinned Restic available
+until their recovery points have been inspected and restored successfully.
+The owner-approved redesign supersedes this repository's recovery-unit
+compatibility work in [Reliability issue 1](https://github.com/clanwright/reliability/issues/1).
+Primitives and Apps retain ownership of their contracts and handlers; this
+flake does not consume them.
+
+Local checks use disposable repositories. They do not establish a deployed
+backup or a usable application recovery point at either destination.
