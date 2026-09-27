@@ -1,7 +1,7 @@
 {
   description = "Standalone Clanwright reliability executor";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/8d5d270900d3fc75655ea2d9d248b234f6631439";
 
   outputs =
     { self, nixpkgs }:
@@ -19,7 +19,7 @@
         pkgs: system:
         let
           reliability = pkgs.callPackage ./nix/package.nix {
-            bubblewrap = if pkgs.stdenv.hostPlatform.isLinux then pkgs.bubblewrap else null;
+            bubblewrap = import ./nix/bubblewrap.nix { inherit pkgs; };
           };
         in
         {
@@ -27,7 +27,7 @@
           default = reliability;
           local-ci = pkgs.writeShellApplication {
             name = "local-ci";
-            runtimeInputs = [ pkgs.nix ];
+            runtimeInputs = [ pkgs.nixVersions.nix_2_35 ];
             text = ''
               nix flake check --no-write-lock-file path:${self}
               nix build --no-write-lock-file --no-link path:${self}#default
@@ -94,7 +94,7 @@
             in
             pkgs.runCommand "reliability-validator-isolation"
               {
-                nativeBuildInputs = [ pkgs.bubblewrap ];
+                nativeBuildInputs = [ (import ./nix/bubblewrap.nix { inherit pkgs; }) ];
               }
               ''
                 mkdir -p input

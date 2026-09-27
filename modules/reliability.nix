@@ -77,7 +77,7 @@ let
     }
   );
   package = pkgs.callPackage ../nix/package.nix {
-    bubblewrap = if pkgs.stdenv.hostPlatform.isLinux then pkgs.bubblewrap else null;
+    bubblewrap = import ../nix/bubblewrap.nix { inherit pkgs; };
   };
   command =
     action: destination:
