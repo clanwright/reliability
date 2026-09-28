@@ -1,5 +1,10 @@
 { ... }:
 
+# Generic file-backup example, not the pending Apps native integration.
+# Its calendars do not enforce export readiness, capture freshness or reader
+# lifetime. The producer must keep the selected files stable until every reader
+# finishes; do not replace/remove them merely because a newer export is ready.
+# Restic comes from the importing NixOS configuration's package set.
 let
   # Placeholder repositories and runtime secret paths; supply both before enabling.
   primary = {
@@ -20,7 +25,7 @@ in
 {
   services.restic.backups = {
     primary = primary // {
-      # Applications must prepare stable files here before this timer runs.
+      # Use only externally prepared files with a supported reader lifetime.
       paths = [ "/srv/backup-input" ];
       timerConfig.OnCalendar = "*-*-* 02:15:00";
     };

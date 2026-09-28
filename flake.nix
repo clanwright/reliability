@@ -2,9 +2,14 @@
   description = "Native Restic recovery checks for NixOS";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/8d5d270900d3fc75655ea2d9d248b234f6631439";
+  inputs.apps.url = "github:clanwright/apps/af0d564cc388aa21e71e0efa4a622d3d11396ea5";
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      apps,
+    }:
     let
       systems = [
         "aarch64-darwin"
@@ -48,6 +53,9 @@
         {
           package = self.packages.${system}.default;
           runtime-integration = import ./tests/restic-integration.nix { inherit pkgs; };
+          apps-composition = import ./tests/apps-composition.nix {
+            inherit pkgs apps;
+          };
         }
         // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           module-eval = import ./tests/module-eval.nix {

@@ -7,12 +7,31 @@ logs, or status output. Preserve recovery credentials independently of the
 protected host and its backup stores.
 
 The native Restic backup services do not create a consistent application
-snapshot by themselves. `/srv/backup-input` must contain completed exports or
-other stable files before either job reads it. A successful Restic backup can
-still contain incomplete application data. Verify a disposable restore and
-application behavior from each destination, with no production writes, public
+snapshot by themselves. In the generic example, `/srv/backup-input` must contain
+completed exports or other stable files before either job reads it. A successful
+Restic backup can still contain incomplete application data. Verify a disposable
+restore and application behavior from each destination, with no production writes, public
 ingress, or outgoing application actions. A production restore requires a
 separate approved procedure.
+
+Apps v0.4.0 publishes only after cleanup and service resumption. Its reader
+preparation copies the completed capture under a shared lock and checks age
+before and after copying. Each destination's independent copy remains its
+input until all Restic processes have stopped; only then may the job clean it
+up. Do not back up the publisher's `current` pointer. A timer dependency is
+not a reader-lifetime guarantee.
+
+Preserve the pinned validation closure for each retained format independently
+of restored `export.json`. Its `validatorStorePath` is provenance, not a GC
+root or a trusted executable selection. The released validator uses root only
+for the disposable isolation handoff, then runs as UID 65534 with Bubblewrap
+environment, capability, file-descriptor, and network isolation, including a
+store-backed `/bin/sh`. It requires a local Linux system manager and cgroup v2
+in the same namespaces. Successful validation cleans only a known-empty
+cgroup. On a failed or uncertain teardown, retain the printed scratch path;
+reboot the disposable host before any manual removal. Upstream release evidence
+supports the matched repository integration; it does not establish acceptance
+of a real destination installation.
 
 Automatic repository initialization and pruning are disabled in the example.
 Restic retention governs logical snapshots and reachable repository objects;
@@ -24,7 +43,8 @@ Test a repository-consistent historical recovery before enabling expiry of
 noncurrent versions. No provider setting is changed by this repository's
 local checks.
 
-Track backup success, snapshot age, structural check, full-data read, and
-application restore separately for each destination. A check cannot establish
-application consistency, and local status cannot detect a host that stopped
-reporting; external monitoring is required.
+Track export capture age, backup/upload success, snapshot age, structural
+check, full-data read, and application restore separately for each destination.
+Re-uploading old data does not refresh its capture age. A check cannot
+establish application consistency, and local status cannot detect a host that
+stopped reporting; external monitoring is required.
