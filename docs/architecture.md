@@ -1,8 +1,7 @@
 # Architecture and ownership
 
-The flake exposes the pinned `pkgs.restic` as its default package and app. It
-does not implement a backup runtime or a NixOS module. The
-[example](../examples/restic.nix) composes NixOS's existing
+The flake exposes the pinned `pkgs.restic` as its default package and app. The
+[generic example](../examples/restic.nix) composes NixOS's existing
 `services.restic.backups` declarations for two independent destinations. Each
 has its own repository and runtime credential paths. Native systemd services
 perform the backups; separate jobs run structural and full-data checks. The
@@ -16,10 +15,12 @@ Back up a live database only through a consistent application-owned export or
 another proven integration; copying its live data directory as ordinary files
 does not establish a recoverable database. Application-specific preparation,
 restore order, and semantic validation remain with the application owner and
-operator. This repository provides no app-specific glue.
+operator. Reliability's optional observation adapter reads the public Apps
+metadata; it does not produce exports or implement validators.
 
 The former executor's recovery-unit declarations, staged generations, commit
-ledger, validator sandbox, maintenance gates, and custom metrics are absent.
+ledger, validator sandbox, and maintenance gates are absent. The optional
+textfile observer below does not reinstate that runtime or its metrics ledger.
 The old contract is not compatible with the native example. Existing snapshots
 remain in their original repositories and must be inspected with compatible,
 pinned Restic and restored through a deliberate migration procedure. A new
@@ -85,3 +86,35 @@ recovery. Repository integration uses our matched composition evaluation and
 the exact released upstream lifecycle and semantic recovery evidence. A real
 installation still needs destination-specific commissioning, described in
 [operations](operations.md).
+
+## Optional capture observation
+
+The [observed composition](../examples/apps-observed-restic.nix) imports the
+baseline Apps composition and preserves its reader preparation and cleanup.
+An ordered native `preStart` hook first records an unsuccessful attempt,
+then the upstream reader preparation runs, then an appended admission check
+validates the prepared copy. Default admission is 64800 seconds (18 hours),
+measured conservatively from capture start. It must be a positive integer no
+greater than the upstream 86400-second ceiling. The arrival budget defaults
+to 86400 seconds and must be positive and at least the admission budget.
+
+Native Restic tags each invocation with systemd's `INVOCATION_ID`. Only after
+an exit-0 backup does `postStart` select exactly one repository snapshot with
+that tag and input path, dump its `export.json`, validate schema/app/format and
+capture times, and enforce arrival age. The bounded
+`restic-capture-observe` adapter publishes textfile metrics for each
+application/destination pair. It only validates metadata, reads Restic
+snapshots and metadata, and emits metrics; it supplies no backup or restore
+runner, scheduler, sandbox or persistent recovery ledger. Unknown provenance,
+partial exit-3 backups and invalid or stale metadata cannot refresh success.
+
+The observer reads the repository at successful backup completion. It does
+not continuously verify repository contents, detect later loss before a new
+attempt, or prove database consistency or semantic recovery. Structural and
+full-data checks and manual restores remain separate evidence. The consumer
+owns node-exporter textfile configuration, off-host scraping and alert delivery,
+and capture/backup/check schedules. Four independent monthly manual drills
+use exact successfully observed snapshot IDs and retained trusted validator
+closures. Issue 2 requires fresh native Linux root/systemd/cgroup v2 runtime
+acceptance; the cached upstream evidence above does not satisfy that pending
+gate.

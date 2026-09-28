@@ -24,6 +24,7 @@
         pkgs: system: {
           restic = pkgs.restic;
           default = pkgs.restic;
+          capture-observation = import ./packages/capture-observation.nix { inherit pkgs; };
           local-ci = pkgs.writeShellApplication {
             name = "local-ci";
             runtimeInputs = [ pkgs.nixVersions.nix_2_35 ];
@@ -54,6 +55,11 @@
           package = self.packages.${system}.default;
           runtime-integration = import ./tests/restic-integration.nix { inherit pkgs; };
           apps-composition = import ./tests/apps-composition.nix {
+            inherit pkgs apps;
+          };
+          capture-observation = import ./tests/capture-observation.nix { inherit pkgs; };
+          capture-alerts = import ./tests/capture-alerts.nix { inherit pkgs; };
+          apps-observed-composition = import ./tests/apps-observed-composition.nix {
             inherit pkgs apps;
           };
         }

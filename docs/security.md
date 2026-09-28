@@ -48,3 +48,23 @@ check, full-data read, and application restore separately for each destination.
 Re-uploading old data does not refresh its capture age. A check cannot
 establish application consistency, and local status cannot detect a host that
 stopped reporting; external monitoring is required.
+
+The optional observed composition reads destination metadata only after the
+native backup succeeds and associates it with that invocation's exact snapshot.
+Readable `export.json`, a current snapshot and a passing repository check alone
+do not establish a complete backup: exit 3 can retain a partial snapshot.
+Success textfiles retain the prior successful observation when a later attempt
+fails. Alert on unsuccessful attempts, missing series, stale capture and
+observation times, and an unavailable off-host scrape target. Local textfiles
+cannot prove the host is reachable or detect later repository loss without a
+new repository operation.
+
+Keep the textfile directory administrator-controlled. Metrics contain app and
+destination labels, capture IDs, snapshot IDs and times, but no repository
+locations or credentials; protect their exposure according to the installation's
+monitoring policy. Never select a validator executable from restored metadata.
+Monthly drills restore each pair independently to root-owned disposable `0700`
+storage and use the matching trusted retained closure. A failed or uncertain
+validation retains scratch and requires the documented disposable-host reboot
+before manual removal. Fresh native Linux root/systemd/cgroup v2 acceptance for
+issue 2 remains pending independently of previously reused release evidence.

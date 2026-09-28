@@ -16,6 +16,31 @@ flake scope with the pinned `apps` input:
 imports = [ (import ./examples/apps-restic.nix { inherit apps; }) ];
 ```
 
+For stricter capture admission and success-only destination observation, opt
+into [the observed composition](../examples/apps-observed-restic.nix) instead:
+
+```nix
+imports = [
+  (import ./examples/apps-observed-restic.nix {
+    inherit apps;
+    admissionMaxAgeSeconds = 64800;
+    arrivalMaxAgeSeconds = 86400;
+    metricsDirectory = "/var/lib/prometheus-node-exporter-text-files";
+  })
+];
+```
+
+When migrating from the v0.3 baseline, replace its example import with this
+import; it already imports the baseline composition. Preserve the pinned Apps
+input, enabled exports, destination configuration, runtime credentials,
+schedules and retained validator closures. Evaluate before separately
+authorized activation. No snapshots are converted, deleted or newly certified
+by changing the import. Capture schedules remain separate from backup schedules.
+Admission must be a positive integer no greater than 86400; arrival must be
+positive and at least admission. The defaults are 18 hours and 24 hours.
+The native reader hook still runs first; the additional check rejects an old
+prepared copy without replacing or text-patching preparation or cleanup.
+
 Adapt destinations and runtime credential paths before activation. The Apps
 example requires both active selections:
 `clanwright.apps.machines.<machine>.obsidian.export.enable = true` and
@@ -43,6 +68,7 @@ Additional Linux checks can be selected on an approved native ARM builder:
 ```sh
 nix build --no-write-lock-file --no-link .#checks.aarch64-linux.module-eval .#checks.aarch64-linux.runtime-integration
 nix build --no-write-lock-file --no-link .#checks.aarch64-linux.apps-composition
+nix build --no-write-lock-file --no-link .#checks.aarch64-linux.apps-observed-composition .#checks.aarch64-linux.capture-observation .#checks.aarch64-linux.capture-alerts
 nix build --no-write-lock-file --no-link github:clanwright/apps/af0d564cc388aa21e71e0efa4a622d3d11396ea5#checks.aarch64-linux.recovery-runtime
 ```
 
@@ -112,9 +138,120 @@ Use only a successfully prepared reader as input. Do not back up the publisher
 root or `current` pointer. Failed preparation can leave partial files; the
 owning job removes its reader only after process teardown. Keep its cache in a
 sibling directory outside the input. Capture age is checked before and after
-copying; the one-day example limit does not promise arrival within one day at
-a slow destination. Record `export.json` capture ID and capture times alongside
-each destination's snapshot ID and upload time.
+copying, conservatively from `captureStartedAt`, not capture completion or
+upload time. The `86400`-second admission limit and native service's `2h`
+start timeout do not promise arrival within 24 hours of capture start at a
+slow destination. A stricter delivery-age policy needs a supported
+admission budget and a destination completion check, supplied by the optional
+observed example above. Its success observation rejects arrival older than the
+configured budget; it cannot guarantee timely delivery through an outage.
+Record `export.json` capture ID and capture times alongside each destination's
+snapshot ID and upload completion time.
+
+Treat backup completion separately from repository integrity. Restic 0.19.1
+[documents exit code 3](https://github.com/restic/restic/blob/v0.19.1/doc/075_scripting.rst)
+when a backup cannot read some source data. Such a backup can retain a snapshot
+with readable `export.json` while `restic check` passes. The
+[snapshot format](https://github.com/restic/restic/blob/v0.19.1/internal/data/snapshot.go)
+has no completeness or backup-error flag. Reading metadata from `latest`, or
+checking that snapshot's repository, therefore cannot prove complete delivery.
+Retain the backup invocation's exact exit status and its association with the
+immutable snapshot ID; missing or uncertain provenance stays unknown and must
+not be accepted as success.
+
+The observed example adds a success-only `ExecStartPost` hook and enforces
+exit-0 success rules; exit 3 cannot run the successful observation. Cleanup and
+`postStop` run on failure too and are not success signals. The native backup
+tags its snapshot with `reliability-invocation:${INVOCATION_ID}`. The observer
+requires exactly one snapshot matching that invocation tag and input path,
+then dumps that immutable snapshot's metadata. Schema 1, matching app/format,
+valid capture times and arrival age must all pass before success is refreshed.
+A success hook still does not independently verify all repository contents or
+establish application recovery.
+
+## Off-host capture monitoring
+
+The observed example creates the configured administrator-controlled metrics
+directory, but does not enable node exporter or configure Prometheus. Configure
+the consumer's node-exporter textfile collector to read that directory, expose
+it through the approved monitoring path, and scrape it from an independent
+host. Keep alert delivery independent of the protected host. The expected pairs
+are `vaultwarden/a`, `vaultwarden/b`, `livesync/a` and `livesync/b`.
+
+On the protected NixOS host, integrate the textfile collector with the
+installation's existing exporter configuration:
+
+```nix
+services.prometheus.exporters.node = {
+  enable = true;
+  enabledCollectors = [ "textfile" ];
+  extraFlags = [
+    "--collector.textfile.directory=/var/lib/prometheus-node-exporter-text-files"
+  ];
+};
+```
+
+Use the same directory as the observed composition. Configure exporter
+reachability and its scrape access through the installation's approved network
+policy. On the independent Prometheus host, load the
+[capture alert group](../examples/capture-alerts.nix), choosing the actual
+scrape labels and timing budgets:
+
+```nix
+{ pkgs, ... }:
+let
+  captureRules = import ./examples/capture-alerts.nix {
+    job = "reliability";
+    instance = "fixture.invalid:9100";
+    warningAgeSeconds = 64800;
+    criticalAgeSeconds = 86400;
+    observationMaxAgeSeconds = 14400;
+    attemptGracePeriod = "2h5m";
+  };
+in {
+  services.prometheus.ruleFiles = [
+    (pkgs.writeText "capture-alerts.json" (builtins.toJSON {
+      groups = [ captureRules ];
+    }))
+  ];
+}
+```
+
+Copy the example into the consumer configuration scope before using that import.
+The fake instance is a placeholder, not a reachable target. Configure the
+matching scrape job and alert routing separately. The group covers an
+unavailable target, missing required metrics for all four pairs, invalid or
+future timestamps, overdue unsuccessful attempts, stale observations, and
+capture-start age warning/critical thresholds. Target and missing-series
+alerts have a five-minute grace. Set observation age for the actual delivery
+schedule; the example's default 900 seconds is illustrative, and the four-hour
+value above also needs a compatible schedule. The attempt grace must cover
+the native two-hour upload timeout plus post-start observation time.
+
+| Metric (labels `app`, `destination`) | Meaning |
+| --- | --- |
+| `reliability_capture_attempt_success` | 0 at attempt start; 1 only after successful destination observation |
+| `reliability_capture_attempt_seconds` | Time of the latest attempt status publication |
+| `reliability_capture_started_seconds` | Capture start from successfully observed repository metadata |
+| `reliability_capture_completed_seconds` | Capture completion from that metadata |
+| `reliability_capture_observation_seconds` | Time that destination metadata was successfully observed |
+| `reliability_capture_snapshot_info` | Value 1 with additional `snapshot_id` and `capture_id` labels for the selected immutable snapshot |
+
+A failed attempt leaves its status at 0 and retains the previous successful
+capture/observation timestamps. Before the first success those success series
+are absent. An active attempt also has status 0: this metric does not immediately
+distinguish activity from failure. The alert reports an unsuccessful or
+incomplete attempt only after its configured grace. Re-uploading an old capture
+does not refresh its capture start.
+The success-only observation reads the repository at backup completion; later
+repository loss is not detected until another repository operation. Monitor
+unsuccessful attempts, missing expected pairs, capture age from start, stale
+observations, and off-host scrape `up`/absence separately from repository checks
+and monthly semantic drills. Configure thresholds and expected scrape-target
+labels for the installation and verify alert delivery during commissioning;
+local metrics alone do not establish monitoring acceptance.
+
+## Retained validation closures
 
 Retain each matching command closure before disabling, removing, or upgrading
 an application. Set the two installable variables to the pinned installation's
@@ -167,6 +304,8 @@ rerun those upstream end-to-end tests or commission a real installation.
 | --- | --- | --- |
 | Reliability | `apps-composition` PASS; `.work/apps-v0.4.0/composition-report.json` records both actual application declarations, four backup jobs and eight independent check jobs | Matched composition evaluation; no service execution |
 | Reliability | Darwin `local-ci` and ARM Linux package, module, Restic and composition checks PASS; `.work/apps-v0.4.0/local-ci.log`, `linux-checks.log` and `linux-outputs.txt` | File transport, structural/full-data checks and restore; not application semantics |
+| Reliability | Issue-2 observed composition evaluation PASS; `.work/issue-2/composition-build.log` | Native hook composition and configuration evaluation; no native lifecycle execution or four-pair semantic recovery |
+| Reliability | Issue-2 Darwin `local-ci` and ARM Linux checks PASS; `.work/issue-2/local-ci.log`, `linux-checks.log` and `linux-outputs.txt` | Real temporary Restic metadata observation, malformed/future/expired rejection, unchanged capture age on re-upload, actual exit-3 fixture, Prometheus exposition parsing and 13 alert scenarios; hook execution remains unproven |
 | Apps | Exact released ARM `recovery-runtime` output reused; all PASS in `.work/apps-v0.4.0/producer-native-check.log` | Disposable owner recovery suite; selected build reused cache rather than freshly executing |
 | Apps | Exact released ARM VM `validator-isolation` output, 111.43 s; `.work/apps-v0.4.0/upstream-isolation-summary.log` | Privileged handoff, cancellation and descendant/isolation behavior; existing release evidence, not rerun here |
 | Apps | Exact released `export-runtime` output: full x86 VM on ARM TCG, 344.16 s; `.work/apps-v0.4.0/upstream-export-summary.log` | Native-service lifecycle, both apps, four app/destination snapshots and semantic recovery; emulation explicitly attributed, not native x86 hardware or a Reliability rerun |
@@ -189,7 +328,12 @@ and stale admission, including the last good capture after failure. Keep
 structural/full-data integrity evidence separate from disposable semantic
 validation of both applications from both repositories. These are installation
 acceptance responsibilities, not an additional mandatory native-hardware gate
-for the delivered repository integration.
+for the earlier issue-1 repository integration. Issue 2 separately requires
+fresh runtime acceptance on a disposable native Linux host as root with its
+local systemd manager and cgroup v2. That gate remains pending: root access to
+an appropriate test host is currently unavailable. The cached upstream results
+above do not complete it. No installation monitoring acceptance or monthly
+four-pair drill has been executed by this documentation change.
 
 `disabled-retained` keeps opted-in native export state but withdraws exporters
 and command outputs. Turning exports off or selecting `null` does not delete
@@ -227,14 +371,52 @@ restic snapshots
 restic check
 restic check --read-data
 restic ls "$SNAPSHOT_ID"
-restic restore "$SNAPSHOT_ID" --target /path/to/disposable-restore
+restic cat snapshot "$SNAPSHOT_ID"
+restic dump "$SNAPSHOT_ID" "$SNAPSHOT_EXPORT_PATH"
+sudo install -d -m 0700 "$RESTORE_ROOT"
+sudo restic restore "$SNAPSHOT_ID" --target "$RESTORE_ROOT"
 ```
 
 Set `SNAPSHOT_ID` to an ID from that repository's snapshot listing, and
-inspect its paths before restoring.
+inspect its paths before restoring. For an acceptance drill, select an
+immutable snapshot with retained evidence that its exact backup invocation
+exited 0. In the observed composition, retain the successful observation and
+its invocation provenance, and select its `snapshot_id` from
+`reliability_capture_snapshot_info`; do not select `latest` merely because it
+contains `export.json`. Set `SNAPSHOT_EXPORT_PATH` to the selected snapshot's
+exact `export.json` path after inspecting its tree. Supply an absolute,
+fresh disposable root-owned `RESTORE_ROOT` and use the approved root Restic
+environment for restore; never overwrite production or an existing drill.
 `check` tests repository structure; `check --read-data` reads repository data.
 Neither substitutes for an application restore. See the
 [Restic restore documentation](https://restic.readthedocs.io/en/stable/050_restore.html).
+
+Perform a separately authorized monthly manual drill for each of the four
+application/destination pairs. Restore the selected snapshot into disposable
+storage and follow the retained-closure validation and isolation instructions
+above. Record each pair independently, including failures and incomplete drills:
+
+| Pair | Status | Snapshot ID | Capture ID | Capture/upload/drill times | Trusted closure | Result/logs/scratch |
+| --- | --- | --- | --- | --- | --- | --- |
+| Vaultwarden / a | pending | — | — | — | — | — |
+| Vaultwarden / b | pending | — | — | — | — | — |
+| LiveSync / a | pending | — | — | — | — | — |
+| LiveSync / b | pending | — | — | — | — | — |
+
+Replace these empty record rows only with evidence from that month's drill.
+
+| Record | Required evidence |
+| --- | --- |
+| Selection and status | Application/destination pair, repository identity, immutable snapshot ID, exact backup exit-0 provenance, and drill status (`pass`, `fail` or `unknown`) |
+| Capture and timing | Restored `export.json` capture ID, capture start/completion, upload completion, drill start/end and duration |
+| Recovery | Trusted retained validator closure and pinned configuration, restore/check/validation logs and results, and scratch-directory path and teardown outcome |
+
+Use `unknown` when snapshot provenance, validation or teardown is uncertain;
+it does not satisfy acceptance. Retain scratch on failed or uncertain validation
+and follow the reboot-before-removal instruction above. Successful delivery or
+a drill for one pair does not cover another pair. This procedure defines the
+manual evidence to collect; no monthly drill or installation monitoring
+acceptance has been executed by documenting it.
 
 ## Breaking migration and retention
 

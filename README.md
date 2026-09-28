@@ -9,6 +9,10 @@ also supplies a NixOS example using the native `services.restic.backups` module.
 Start with [the native configuration example](examples/restic.nix). The
 [Apps composition example](examples/apps-restic.nix) imports the released
 application-owned native Restic integration for Vaultwarden and LiveSync.
+The optional [observed Apps composition](examples/apps-observed-restic.nix)
+adds stricter capture admission, success-only destination metadata observation
+and Prometheus textfile metrics. [Operations](docs/operations.md) explains its
+off-host monitoring setup and four independent monthly manual recovery drills.
 The [architecture](docs/architecture.md) explains what the example does and where
 application consistency belongs. [Operations](docs/operations.md) contains
 verification, commissioning, restore, and retention commands.
@@ -23,7 +27,8 @@ until their recovery points have been inspected and restored successfully.
 The owner-approved redesign supersedes this repository's recovery-unit
 compatibility work in [Reliability issue 1](https://github.com/clanwright/reliability/issues/1#issuecomment-5858246892).
 Apps owns consistent exports, reader preparation, and the semantic recovery
-procedure. Reliability owns the matched Restic composition example and checks.
+procedure. Reliability owns the matched Restic composition, bounded metadata
+observation and checks.
 Primitives participates only if a concrete shared contract is needed.
 
 Apps v0.4.0 (`af0d564cc388aa21e71e0efa4a622d3d11396ea5`) publishes the
@@ -37,3 +42,5 @@ installation procedure.
 
 Local checks use disposable repositories. They do not establish a deployed
 backup or a usable application recovery point at either destination.
+Issue 2's native Linux root/systemd/cgroup v2 recovery acceptance remains
+pending; prior cached Apps evidence does not complete that gate.
