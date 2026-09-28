@@ -328,12 +328,14 @@ and stale admission, including the last good capture after failure. Keep
 structural/full-data integrity evidence separate from disposable semantic
 validation of both applications from both repositories. These are installation
 acceptance responsibilities, not an additional mandatory native-hardware gate
-for the earlier issue-1 repository integration. Issue 2 separately requires
-fresh runtime acceptance on a disposable native Linux host as root with its
-local systemd manager and cgroup v2. That gate remains pending: root access to
-an appropriate test host is currently unavailable. The cached upstream results
-above do not complete it. No installation monitoring acceptance or monthly
-four-pair drill has been executed by this documentation change.
+for the earlier issue-1 repository integration. For issue 2, the owner accepted
+implementation and the documented manual procedure without further
+local-machine or virtual-machine testing. This supersedes the issue's original
+pre-release native runtime gate; it does not turn unexecuted checks into passing
+evidence. Native hook execution, installation monitoring acceptance and monthly
+four-pair semantic drills were not verified by this release. Perform installation
+commissioning separately with the documented Linux root/systemd/cgroup v2
+prerequisites; cached upstream results do not establish that acceptance.
 
 `disabled-retained` keeps opted-in native export state but withdraws exporters
 and command outputs. Turning exports off or selecting `null` does not delete

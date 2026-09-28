@@ -66,5 +66,7 @@ monitoring policy. Never select a validator executable from restored metadata.
 Monthly drills restore each pair independently to root-owned disposable `0700`
 storage and use the matching trusted retained closure. A failed or uncertain
 validation retains scratch and requires the documented disposable-host reboot
-before manual removal. Fresh native Linux root/systemd/cgroup v2 acceptance for
-issue 2 remains pending independently of previously reused release evidence.
+before manual removal. The owner excluded further local-machine and
+virtual-machine testing from issue 2's delivery scope. Native runtime and
+four-pair semantic recovery acceptance remain unverified and must not be
+inferred from this release or previously reused evidence.

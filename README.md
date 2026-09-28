@@ -42,5 +42,7 @@ installation procedure.
 
 Local checks use disposable repositories. They do not establish a deployed
 backup or a usable application recovery point at either destination.
-Issue 2's native Linux root/systemd/cgroup v2 recovery acceptance remains
-pending; prior cached Apps evidence does not complete that gate.
+The owner accepted issue 2's implementation and documented manual procedure
+without further local-machine or virtual-machine testing. Native service
+execution and four-pair semantic recovery were not verified by this release;
+installation commissioning remains separate.

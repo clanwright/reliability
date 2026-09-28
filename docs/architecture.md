@@ -115,6 +115,7 @@ full-data checks and manual restores remain separate evidence. The consumer
 owns node-exporter textfile configuration, off-host scraping and alert delivery,
 and capture/backup/check schedules. Four independent monthly manual drills
 use exact successfully observed snapshot IDs and retained trusted validator
-closures. Issue 2 requires fresh native Linux root/systemd/cgroup v2 runtime
-acceptance; the cached upstream evidence above does not satisfy that pending
-gate.
+closures. The owner accepted issue 2 without further local-machine or
+virtual-machine testing. Native hook execution and four-pair semantic recovery
+remain unverified; previously cached upstream evidence does not establish
+those release-specific runtime behaviors.
