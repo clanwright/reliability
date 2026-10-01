@@ -2,7 +2,7 @@
   description = "Native Restic recovery checks for NixOS";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/8d5d270900d3fc75655ea2d9d248b234f6631439";
-  inputs.apps.url = "github:clanwright/apps/aa63cbe9f73b1af6360499cedef326e813da700b";
+  inputs.apps.url = "github:clanwright/apps/b4e93c24ef51501f98d256ff699c22e62f1893d9";
 
   outputs =
     {

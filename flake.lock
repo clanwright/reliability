@@ -8,17 +8,17 @@
         "primitives": "primitives"
       },
       "locked": {
-        "lastModified": 1790843769,
-        "narHash": "sha256-vFJpnjLPecycoJntN8/3nuBb7tHlk9hkAUzonR0kCtM=",
+        "lastModified": 1790860693,
+        "narHash": "sha256-bYVF2BDGyhcnx1cq9k9eV/NqpDOeDc5BfnPBVjInQUw=",
         "owner": "clanwright",
         "repo": "apps",
-        "rev": "aa63cbe9f73b1af6360499cedef326e813da700b",
+        "rev": "b4e93c24ef51501f98d256ff699c22e62f1893d9",
         "type": "github"
       },
       "original": {
         "owner": "clanwright",
         "repo": "apps",
-        "rev": "aa63cbe9f73b1af6360499cedef326e813da700b",
+        "rev": "b4e93c24ef51501f98d256ff699c22e62f1893d9",
         "type": "github"
       }
     },
@@ -67,10 +67,7 @@
     },
     "clan-core_2": {
       "inputs": {
-        "data-mesher": [
-          "apps",
-          "network"
-        ],
+        "data-mesher": "data-mesher_2",
         "disko": "disko_2",
         "flake-parts": "flake-parts_2",
         "nix-darwin": "nix-darwin_2",
@@ -100,7 +97,7 @@
     },
     "clan-core_3": {
       "inputs": {
-        "data-mesher": "data-mesher_2",
+        "data-mesher": "data-mesher_3",
         "disko": "disko_3",
         "flake-parts": "flake-parts_3",
         "nix-darwin": "nix-darwin_3",
@@ -156,6 +153,39 @@
       }
     },
     "data-mesher_2": {
+      "inputs": {
+        "flake-parts": [
+          "apps",
+          "network",
+          "clan-core",
+          "flake-parts"
+        ],
+        "nixpkgs": [
+          "apps",
+          "network",
+          "clan-core",
+          "nixpkgs"
+        ],
+        "treefmt-nix": [
+          "apps",
+          "network",
+          "clan-core",
+          "treefmt-nix"
+        ]
+      },
+      "locked": {
+        "lastModified": 1788466152,
+        "narHash": "sha256-isxp9C6uopHsXmfh8oj392ZYR7P6Yv/KkZo6jk5ai74=",
+        "rev": "9761d7227702c66b944e56ba7e7ee7af4ca8126e",
+        "type": "tarball",
+        "url": "https://git.clan.lol/api/v1/repos/clan/data-mesher/archive/9761d7227702c66b944e56ba7e7ee7af4ca8126e.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://git.clan.lol/clan/data-mesher/archive/main.tar.gz"
+      }
+    },
+    "data-mesher_3": {
       "inputs": {
         "flake-parts": [
           "apps",
@@ -330,17 +360,17 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1790798156,
-        "narHash": "sha256-3COGQWxuPGfBFX1tRqCqkuxHgLYyAGqSrdZn5L9/x9A=",
+        "lastModified": 1790857182,
+        "narHash": "sha256-UBzirrmrNyd5oALXRHCXU1K6AVwn3ebufuzS7In1X4w=",
         "owner": "clanwright",
         "repo": "network",
-        "rev": "9421c102c9536a4345446a74aaaeb603cb6a23e3",
+        "rev": "e30e08028b88cd4e9706a0644e1f0273ebb88fdb",
         "type": "github"
       },
       "original": {
         "owner": "clanwright",
         "repo": "network",
-        "rev": "9421c102c9536a4345446a74aaaeb603cb6a23e3",
+        "rev": "e30e08028b88cd4e9706a0644e1f0273ebb88fdb",
         "type": "github"
       }
     },
