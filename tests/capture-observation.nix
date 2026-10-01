@@ -1,7 +1,25 @@
 { pkgs }:
 
 let
-  observer = import ../packages/capture-observation.nix { inherit pkgs; };
+  observer = import ../packages/capture-observation.nix {
+    inherit pkgs;
+    restic = pkgs.restic;
+  };
+  # Test-only dependency injection makes the final atomic status write fail
+  # after a real snapshot dump. The production observer has no runtime override.
+  finalWriteRestic = pkgs.writeShellScriptBin "restic" ''
+    ${pkgs.restic}/bin/restic "$@"
+    result=$?
+    if test "$result" -eq 0 && test "''${2:-}" = dump; then
+      rm "$TEST_ATTEMPT"
+      mkdir "$TEST_ATTEMPT"
+    fi
+    exit "$result"
+  '';
+  finalWriteObserver = import ../packages/capture-observation.nix {
+    inherit pkgs;
+    restic = finalWriteRestic;
+  };
 in
 pkgs.runCommand "reliability-capture-observation"
   {
@@ -15,20 +33,18 @@ pkgs.runCommand "reliability-capture-observation"
   }
   ''
     set -euo pipefail
-    mkdir -p "$out/artifacts"
+    mkdir -p "$out"
     work=$(mktemp -d)
+    trap 'result=$?; if test "$result" -ne 0; then cat "$work"/*.log >&2; fi' EXIT
     mkdir -p "$work/input" "$work/metrics"
     export RESTIC_REPOSITORY="$work/repository"
     export RESTIC_PASSWORD_FILE="$work/password"
     export RESTIC_HOST=fixture-host
-    export RESTIC_OBSERVER_RESTIC=${pkgs.restic}/bin/restic
     printf 'test-only-disposable-password\n' > "$RESTIC_PASSWORD_FILE"
     chmod 600 "$RESTIC_PASSWORD_FILE"
-    restic version > "$out/check.log"
-    restic --no-cache init > "$out/artifacts/init.log" 2>&1
-    observer=restic-capture-observe
-    format=vaultwarden-pg18-files-v1
+    restic --no-cache init > "$work/init.log" 2>&1
     app=vaultwarden
+    format=vaultwarden-pg18-files-v1
     destination=fixture-a
     source="$work/input"
     metrics="$work/metrics"
@@ -39,159 +55,150 @@ pkgs.runCommand "reliability-capture-observation"
     invocation() { serial=$((serial + 1)); printf -v invocation_id '%032x' "$serial"; }
     fixture() {
       now=$(date +%s)
-      started=$((now - 300))
-      completed=$((now - 290))
+      started=$((now - 300)); completed=$((now - 290))
       jq -n --arg app "$app" --arg format "$format" --argjson started "$started" --argjson completed "$completed" '
-        {schemaVersion:1,appId:$app,formatVersion:$format,captureId:"fixture-capture-1234",
+        {schemaVersion:1,appId:$app,formatVersion:$format,captureId:"uuid-1234\\quote\"line\nnext",
          validatorStorePath:"/nix/store/fixture-validator",captureStartedAt:$started,captureCompletedAt:$completed}
       ' > "$source/export.json"
       printf 'fake application export\n' > "$source/data"
+      printf '\000\001\376\377' > "$source/bytes"
     }
     backup() {
       invocation
-      restic --no-cache backup --tag "reliability-invocation:$invocation_id" "$source" > "$out/artifacts/backup-$serial.log" 2>&1
+      restic --no-cache backup --tag "reliability-invocation:$invocation_id" "$source" > "$work/backup.log" 2>&1
     }
-    observe() {
-      "$observer" observe "$app" "$destination" "$format" 3600 "$source" "$metrics" "$invocation_id" --no-cache
-    }
-    failed_attempt() {
-      cmp "$success" "$work/previous-success.prom"
-      # Assertions use the public metrics, not the adapter's private helpers.
+    start() { restic-capture-observe start "$app" "$destination" "$metrics"; }
+    observe() { restic-capture-observe observe "$app" "$destination" "$format" 3600 "$source" "$metrics" "$invocation_id" --no-cache; }
+    pending() {
       test "$(sed -n '1p' "$attempt")" = 'reliability_capture_attempt_success{app="vaultwarden",destination="fixture-a"} 0'
     }
-    rejected_fixture() {
-      name=$1
-      cp "$success" "$work/previous-success.prom"
-      if "$observer" admit "$app" "$format" 3600 "$source/export.json" > "$out/artifacts/admit-$name.log" 2>&1; then
-        printf 'FAIL: admitted %s\n' "$name" >> "$out/check.log"; exit 1
-      fi
-      backup
-      if observe > "$out/artifacts/observe-$name.log" 2>&1; then
-        printf 'FAIL: observed %s\n' "$name" >> "$out/check.log"; exit 1
-      fi
-      failed_attempt
-      pass "$name rejected; prior successful metrics preserved; attempt failed"
+    rejected() {
+      cp "$success" "$work/previous-success"
+      start
+      cp "$attempt" "$work/previous-attempt"
+      if test "$1" = 'real malformed dump'; then sleep 1; fi
+      if observe > "$work/rejected.log" 2>&1; then exit 1; fi
+      cmp "$success" "$work/previous-success"
+      cmp "$attempt" "$work/previous-attempt"
+      pending
+      pass "$1 rejected; prior capture and pending event retained"
     }
 
+    # Exercise the same predicate as the runtime without creating snapshots for
+    # every metadata mutation. Fixed time makes boundary assertions reproducible.
     fixture
-    "$observer" start "$app" "$destination" "$metrics"
+    jq '.captureStartedAt = 9700 | .captureCompletedAt = 9710' "$source/export.json" > "$work/valid.json"
+    validate() { jq -se --arg app "$app" --arg format "$format" --argjson now 10000 --argjson age 300 -f ${../packages/capture-metadata.jq} "$1" >/dev/null 2>&1; }
+    validate "$work/valid.json"
+    for expression in '.schemaVersion = 2' '.appId = "livesync"' '.formatVersion = "other"' '.captureCompletedAt = 10001' '.captureStartedAt = .captureCompletedAt + 1' '.captureStartedAt = 9699' '.captureStartedAt += 0.5' 'del(.validatorStorePath)' '.captureId = 123' '.captureStartedAt = 0' '.captureCompletedAt = 9007199254740992' '.captureId = ""' '.validatorStorePath = ""' '.captureStartedAt = "9700"' '.'; do
+      if test "$expression" = '.'; then printf '[]\n' > "$work/invalid.json"; else jq "$expression" "$work/valid.json" > "$work/invalid.json"; fi
+      if validate "$work/invalid.json"; then exit 1; fi
+    done
+    printf '{ malformed\n' > "$work/invalid.json"
+    if validate "$work/invalid.json"; then exit 1; fi
+    cat "$work/valid.json" "$work/valid.json" > "$work/invalid.json"
+    if validate "$work/invalid.json"; then exit 1; fi
+    : > "$work/invalid.json"
+    if validate "$work/invalid.json"; then exit 1; fi
+    if validate "$work/missing.json"; then exit 1; fi
+    pass 'shared metadata predicate: schema, identity, types, bounds, age equality, malformed and document cardinality'
+
+    before_start=$(date +%s)
+    start
+    pending
     test ! -e "$success"
-    "$observer" admit "$app" "$format" 3600 "$source/export.json"
+    start_time=$(awk 'NR == 2 {print $NF}' "$attempt")
+    test "$start_time" -ge "$before_start"
+    test "$start_time" -le "$(date +%s)"
     backup
+    sleep 1
     observe
+    finish_time=$(awk 'NR == 2 {print $NF}' "$attempt")
+    test "$finish_time" -gt "$start_time"
     test "$(sed -n '1p' "$attempt")" = 'reliability_capture_attempt_success{app="vaultwarden",destination="fixture-a"} 1'
     test "$(sed -n '1p' "$success")" = "reliability_capture_started_seconds{app=\"$app\",destination=\"$destination\"} $started"
     test "$(sed -n '2p' "$success")" = "reliability_capture_completed_seconds{app=\"$app\",destination=\"$destination\"} $completed"
     test "$(stat -c %a "$success")" = 644
-    cp "$success" "$work/first-success.prom"
-    pass 'native backup exit 0, exact invocation tag and paths, capture timestamps, public metrics mode 0644'
-
-    "$observer" start "$app" "$destination" "$metrics"
-    cp "$work/first-success.prom" "$work/previous-success.prom"
-    failed_attempt
-    backup
-    observe
-    head -n 2 "$work/first-success.prom" > "$work/first-times"
-    head -n 2 "$success" > "$work/reupload-times"
-    cmp "$work/first-times" "$work/reupload-times"
-    pass 'reupload retained original capture times; start retained previous capture success'
-
-    for mutation in schema wrong-app wrong-format future inverted expired fractional missing-field wrong-type; do
-      fixture
-      case "$mutation" in
-        schema) expression='.schemaVersion = 2' ;;
-        wrong-app) expression='.appId = "livesync"' ;;
-        wrong-format) expression='.formatVersion = "another-format"' ;;
-        future) expression='.captureCompletedAt = 9007199254740991' ;;
-        inverted) expression='.captureStartedAt = .captureCompletedAt + 1' ;;
-        expired) expression='.captureStartedAt = 1 | .captureCompletedAt = 2' ;;
-        fractional) expression='.captureStartedAt += 0.5' ;;
-        missing-field) expression='del(.validatorStorePath)' ;;
-        wrong-type) expression='.captureId = 123' ;;
-      esac
-      jq "$expression" "$source/export.json" > "$work/changed.json"
-      cp "$work/changed.json" "$source/export.json"
-      rejected_fixture "$mutation"
-    done
-    fixture
-    printf '{ malformed metadata\n' > "$source/export.json"
-    rejected_fixture malformed
-    fixture
-    cp "$source/export.json" "$work/extra.json"
-    cat "$work/extra.json" >> "$source/export.json"
-    rejected_fixture multiple-documents
-    fixture
-    rm "$source/export.json"
-    rejected_fixture missing-export
-
-    fixture
-    backup
-    cp "$success" "$work/previous-success.prom"
-    if "$observer" observe livesync "$destination" "$format" 3600 "$source" "$metrics" "$invocation_id" --no-cache > "$out/artifacts/wrong-pair.log" 2>&1; then exit 1; fi
-    cmp "$success" "$work/previous-success.prom"
-    test ! -e "$metrics/livesync.$destination.success.prom"
-    pass 'wrong application pair cannot publish capture success'
-
-    cp "$success" "$work/previous-success.prom"
-    if RESTIC_REPOSITORY="$work/nonexistent" observe > "$out/artifacts/inaccessible-repository.log" 2>&1; then exit 1; fi
-    failed_attempt
-    pass 'inaccessible repository preserves prior success'
-
-    invocation_id=ffffffffffffffffffffffffffffffff
-    if observe > "$out/artifacts/missing-invocation.log" 2>&1; then exit 1; fi
-    failed_attempt
-    pass 'missing invocation fails without latest-snapshot fallback'
-
-    backup
-    restic --no-cache backup --tag "reliability-invocation:$invocation_id" "$source" > "$out/artifacts/ambiguous-backup.log" 2>&1
-    if observe > "$out/artifacts/ambiguous-invocation.log" 2>&1; then exit 1; fi
-    failed_attempt
-    pass 'ambiguous invocation is rejected'
-
-    invocation
-    mkdir -p "$work/extra-path"
-    printf 'fake second path\n' > "$work/extra-path/file"
-    restic --no-cache backup --tag "reliability-invocation:$invocation_id" "$source" "$work/extra-path" > "$out/artifacts/multiple-paths.log" 2>&1
-    if observe > "$out/artifacts/wrong-paths.log" 2>&1; then exit 1; fi
-    failed_attempt
-    pass 'snapshot with additional paths is rejected'
-
-    fixture
-    jq '.captureId = "uuid-1234\\quote\"line\nnext"' "$source/export.json" > "$work/escaped.json"
-    cp "$work/escaped.json" "$source/export.json"
-    backup
-    observe
+    test "$(stat -c %a "$attempt")" = 644
     grep -F 'capture_id="uuid-1234\\quote\"line\nnext"} 1' "$success" >/dev/null
     test "$(wc -l < "$success")" -eq 4
-    promtool check metrics --extended --lint=none < "$success" > "$out/artifacts/escaped-label-promtool.log" 2>&1
-    promtool check metrics --extended --lint=none < "$attempt" > "$out/artifacts/attempt-promtool.log" 2>&1
-    pass 'producer capture ID backslash, quote and newline safely escaped; Prometheus exposition parser accepted success and attempt metrics'
+    promtool check metrics --extended --lint=none < "$success" > "$work/promtool.log" 2>&1
+    promtool check metrics --extended --lint=none < "$attempt" >> "$work/promtool.log" 2>&1
+    restic --no-cache check > "$work/check.log" 2>&1
+    restic --no-cache check --read-data > "$work/read-data.log" 2>&1
+    restic --no-cache restore latest --target "$work/restored" --verify > "$work/restore.log" 2>&1
+    cmp "$source/data" "$work/restored$source/data"
+    cmp "$source/bytes" "$work/restored$source/bytes"
+    cmp "$source/export.json" "$work/restored$source/export.json"
+    pass 'exact invocation/path dump, escaped public metrics, completion event, repository structure/read-data and byte-exact restore'
 
-    # A partial Restic snapshot is real, but native ExecStartPost must never
-    # invoke the observer after exit 3. The observer cannot infer backup exit
-    # status from snapshot metadata; this test exercises that caller boundary.
-    cp "$success" "$work/previous-success.prom"
+    head -n 2 "$success" > "$work/original-times"
+    start
+    backup
+    observe
+    head -n 2 "$success" > "$work/reupload-times"
+    cmp "$work/original-times" "$work/reupload-times"
+    successful_invocation=$invocation_id
+    pass 'reupload retains producer capture age'
+
+    printf '{ malformed metadata\n' > "$source/export.json"
+    backup
+    rejected 'real malformed dump'
+    fixture
+    jq '.captureStartedAt = 1 | .captureCompletedAt = 2' "$source/export.json" > "$work/stale.json"
+    cp "$work/stale.json" "$source/export.json"
+    backup
+    rejected 'real stale dump'
+    fixture
+    backup
+    saved_invocation=$invocation_id
+    invocation_id=ffffffffffffffffffffffffffffffff
+    rejected 'missing invocation'
+    invocation_id=$saved_invocation
+    cp "$success" "$work/previous-success"
+    start
+    cp "$attempt" "$work/previous-attempt"
+    if RESTIC_REPOSITORY="$work/nonexistent" observe > "$work/inaccessible.log" 2>&1; then exit 1; fi
+    cmp "$success" "$work/previous-success"
+    cmp "$attempt" "$work/previous-attempt"
+    pass 'inaccessible repository fails closed'
+    restic --no-cache backup --tag "reliability-invocation:$invocation_id" "$source" > "$work/ambiguous-backup.log" 2>&1
+    rejected 'ambiguous invocation'
+    invocation
+    mkdir -p "$work/extra-path"
+    printf 'extra\n' > "$work/extra-path/file"
+    restic --no-cache backup --tag "reliability-invocation:$invocation_id" "$source" "$work/extra-path" > "$work/extra-backup.log" 2>&1
+    rejected 'additional snapshot path'
+
+    # Native success-hook gating is separately verified at the NixOS unit layer.
+    # This fixture must actually produce exit 3; root is unsupported, not skipped.
+    test "$(id -u)" -ne 0
     fixture
     invocation
-    printf 'fake unreadable fixture\n' > "$source/unreadable"
+    printf 'unreadable fixture\n' > "$source/unreadable"
     chmod 000 "$source/unreadable"
-    "$observer" start "$app" "$destination" "$metrics"
+    cp "$success" "$work/previous-success"
+    start
     set +e
-    restic --no-cache backup --tag "reliability-invocation:$invocation_id" "$source" > "$out/artifacts/partial-backup.log" 2>&1
+    restic --no-cache backup --tag "reliability-invocation:$invocation_id" "$source" > "$work/partial.log" 2>&1
     result=$?
     set -e
     chmod 600 "$source/unreadable"
-    if test "$result" -eq 3; then
-      restic --no-cache snapshots --json --tag "reliability-invocation:$invocation_id" > "$out/artifacts/partial-snapshot.json"
-      jq -e 'length == 1' "$out/artifacts/partial-snapshot.json" >/dev/null
-      failed_attempt
-      pass 'actual unreadable-file backup exit 3 produced snapshot; success hook withheld, attempt failed'
-    elif test "$result" -eq 0 && test "$(id -u)" -eq 0; then
-      pass 'unreadable-file exit 3 fixture skipped as root; native success-hook responsibility remains required'
-    else
-      printf 'FAIL: expected unreadable-file backup exit 3, got %s\n' "$result" >> "$out/check.log"
-      exit 1
-    fi
-    cp "$metrics"/*.prom "$out/artifacts/"
-    pass 'local fixture observation only; no systemd, database-consistency or semantic recovery claim'
+    test "$result" -eq 3
+    restic --no-cache snapshots --json --tag "reliability-invocation:$invocation_id" | jq -e 'length == 1' >/dev/null
+    cmp "$success" "$work/previous-success"
+    pending
+    pass 'actual partial exit 3 with snapshot: withheld observer leaves attempt pending'
+
+    # Publish truthful verified capture metadata, but do not certify an attempt
+    # whose final atomic status write fails.
+    invocation_id=$successful_invocation
+    start
+    export TEST_ATTEMPT="$attempt"
+    if ${finalWriteObserver}/bin/restic-capture-observe observe "$app" "$destination" "$format" 3600 "$source" "$metrics" "$invocation_id" --no-cache > "$work/final-write.log" 2>&1; then exit 1; fi
+    test -d "$attempt"
+    test -z "$(ls -A "$attempt")"
+    head -n 2 "$success" > "$work/final-times"
+    cmp "$work/original-times" "$work/final-times"
+    pass 'final status-write failure returns failure; verified metadata truthful and latest attempt uncertified'
   ''

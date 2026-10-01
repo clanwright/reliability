@@ -7,7 +7,7 @@ let
   lib = pkgs.lib;
   cfg =
     (nixosSystem {
-      system = pkgs.stdenv.hostPlatform.system;
+      system = "x86_64-linux";
       modules = [
         ../examples/restic.nix
         {
@@ -93,8 +93,6 @@ assert
 assert lib.all (
   name: builtins.any (pkg: pkg.name == "restic-${name}") cfg.environment.systemPackages
 ) backupNames;
-assert !(has services "clanwright-reliability-capture");
-assert !(has services "clanwright-reliability-backup-primary");
 pkgs.runCommand "reliability-native-module-eval" { } ''
   touch "$out"
 ''

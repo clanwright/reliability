@@ -101,14 +101,9 @@ assert builtins.isInt observationMaxAgeSeconds && observationMaxAgeSeconds > 0;
       "Capture observation has invalid or future timestamps."
       "max by (job, instance, app, destination) (${invalid})"
     )
-    (
-      (rule "ReliabilityCaptureAttemptFailed" "critical"
-        "Capture attempt failed or has not completed within the consumer grace period."
-        "${series "attempt_success"} == 0"
-      )
-      // {
-        "for" = attemptGracePeriod;
-      }
+    (rule "ReliabilityCaptureAttemptFailed" "critical"
+      "Capture attempt failed or has not completed within the consumer grace period."
+      "(${series "attempt_success"} == 0) and (time() - ${series "attempt_seconds"} > ${attemptGracePeriod})"
     )
     (rule "ReliabilityCaptureObservationStale" "critical"
       "Capture observation is older than the consumer freshness limit."

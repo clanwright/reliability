@@ -1,121 +1,108 @@
 # Architecture and ownership
 
-The flake exposes the pinned `pkgs.restic` as its default package and app. The
-[generic example](../examples/restic.nix) composes NixOS's existing
-`services.restic.backups` declarations for two independent destinations. Each
-has its own repository and runtime credential paths. Native systemd services
-perform the backups; separate jobs run structural and full-data checks. The
-example does not initialize repositories or configure automatic pruning.
+Reliability composes the upstream NixOS `services.restic.backups` module.
+Native systemd services run Restic; separate jobs check repository structure
+and read all repository data. The installation owns destinations, runtime
+credentials, schedules, monitoring, deployment and retention. The
+[README](../README.md#inputs-and-acceptance) identifies the authoritative test
+cohort and acceptance boundary.
 
-The installation chooses source paths, schedules, destinations, credentials,
-monitoring, and deployment. The example expects `/srv/backup-input` to contain
-stable, prepared files. Neither this repository nor the NixOS Restic module
-automatically connects native Clan state hooks or produces application exports.
-Back up a live database only through a consistent application-owned export or
-another proven integration; copying its live data directory as ordinary files
-does not establish a recoverable database. Application-specific preparation,
-restore order, and semantic validation remain with the application owner and
-operator. Reliability's optional observation adapter reads the public Apps
-metadata; it does not produce exports or implement validators.
+The [generic example](../examples/restic.nix) expects stable, prepared files
+under `/srv/backup-input`. It does not produce application exports or connect
+native Clan state hooks. Copying a live database directory does not establish
+an application-consistent backup.
 
-The former executor's recovery-unit declarations, staged generations, commit
-ledger, validator sandbox, and maintenance gates are absent. The optional
-textfile observer below does not reinstate that runtime or its metrics ledger.
-The old contract is not compatible with the native example. Existing snapshots
-remain in their original repositories and must be inspected with compatible,
-pinned Restic and restored through a deliberate migration procedure. A new
-native backup is a new recovery stream; it does not import or certify the old
-one. See [operations](operations.md) before switching an installation.
+## Apps composition
 
-Passing module evaluation and a real Restic test against disposable local data
-shows that the example and basic file backup path work. It does not prove
-application-consistent exports, successful access to production destinations,
-or restoration of an application. Each destination needs its own operational
-evidence.
-
-## Released native Apps composition
-
-[Apps v0.4.0](https://github.com/clanwright/apps/blob/v0.4.0/docs/recovery.md)
-owns exports, failure and cancellation behavior, reader preparation, freshness
-metadata, and executable semantic validation. Per-app `export.enable` is off
-by default. Enabling it exposes unscheduled
-`apps-export-vaultwarden.service` and `apps-export-livesync.service`; ordinary
-application enablement starts neither exports nor backup timers. Cleanup and
-production service resumption finish before a complete capture is published
-under `/var/lib/clanwright-app-exports/{vaultwarden,livesync}`.
-Failure before publication preserves the previous capture. A later reclamation
-failure can report service failure while the newly completed capture remains
-usable; record the service result and journal as well as metadata.
-
-Restic must not read the publisher's `current` directory directly.
+[apps-restic.nix](../examples/apps-restic.nix) is one constructor returning a
+NixOS module. It consumes the public consumer-configured
 `system.build.appsVaultwardenExport` and `system.build.appsLiveSyncExport`
-provide `prepare-reader`, which copies a capture into an independent reader
-directory. It holds a shared publisher lock only while copying and checks age
-before and after the copy; missing, future-dated, or stale captures fail. Once
-prepared, each destination owns its copy for the entire Restic process
-lifetime. Publisher replacement cannot alter another destination's reader.
-Reader cleanup follows process teardown, and the Restic cache is a sibling of
-the input so cache exclusion cannot exclude the backup itself. Native
-`Requires`/`After` ordering supplies startup ordering, not an ongoing source
-lease. Capture production and destination preparation remain separate jobs;
-one destination's slow upload, failure, or retry does not pause production.
+outputs; it takes no Apps input argument and imports no upstream example.
+The consumer enables both exports and imports the corresponding Apps modules.
+Application enablement alone schedules neither captures nor backups.
 
-The reader preserves `export.json` schema 1 with `appId`, `captureId`,
-`captureStartedAt`, `captureCompletedAt` (integer Unix seconds), `formatVersion`,
-and `validatorStorePath`. Capture time, upload time, and Restic snapshot time
-are separate facts. Re-uploading an old capture does not make it fresh. After
-a failed export, the last good capture is usable only while it passes the
-configured admission-age limit; a slow destination can receive it later.
-`validatorStorePath` records provenance; it is neither
-permission to execute a restored path nor a Nix garbage-collection root.
+| Constructor option | Default | Meaning |
+| --- | --- | --- |
+| `observe` | `false` | Enable success-only destination observation |
+| `admissionMaxAgeSeconds` | `86400`, or `64800` with observation | Maximum capture-start age during reader preparation |
+| `arrivalMaxAgeSeconds` | `86400` | Maximum capture-start age at destination observation |
+| `metricsDirectory` | `/var/lib/prometheus-node-exporter-text-files` | Administrator-controlled textfile directory |
 
-Reliability's [Apps example](../examples/apps-restic.nix) imports the upstream
-public composition directly and adds separate structural and full-data check
-jobs for both applications, requiring both export selections to be enabled.
-Reliability owns evaluation and transport acceptance of that composition,
-not application capture or validation code. The consumer owns destinations,
-schedules, retention, credentials, monitoring, deployment, and preservation of
-the pinned validation closure. Primitives participates only if a concrete
-shared contract requirement appears.
+Admission is a positive integer no greater than 86400. Arrival is positive
+and at least admission. The four backups are `vaultwarden-a`, `vaultwarden-b`,
+`livesync-a` and `livesync-b`. Each has independent `-structure` and `-full`
+check jobs inheriting its repository, credentials and final Restic package.
+The backup job's final `package` is the single Restic authority for backup,
+observer and both checks, including consumer overrides.
+All twelve jobs are manual by default, without initialization, pruning or
+command wrappers. Consumers add schedules explicitly.
 
-The released validator performs a root-to-unprivileged isolation handoff using
-a transient systemd service. It needs a disposable native Linux environment
-with a local system manager and cgroup v2; it must not validate production
-directories. Restic structural and full-data checks do not prove semantic
-recovery. Repository integration uses our matched composition evaluation and
-the exact released upstream lifecycle and semantic recovery evidence. A real
-installation still needs destination-specific commissioning, described in
-[operations](operations.md).
+Each backup calls the public `prepare-reader` directly with the selected age
+once. It copies a completed Apps capture into that job's input and checks age
+before and after copying. No appended admission command or patched upstream
+hook duplicates this work. Restic must not read the publisher's `current`
+pointer. Capture production and destination preparation are independent;
+a slow destination does not prevent another reader from preparing its copy.
 
-## Optional capture observation
+Readers use a per-job disk-backed `CacheDirectory`, owned by root with mode
+`0700`. Its `apps-input` child and Restic `cache` child are siblings, keeping
+cache exclusion outside the backup input. Native services use a two-hour
+start timeout, two-minute stop timeout and process teardown before reader
+cleanup. These settings express the intended lifecycle; evaluation alone
+does not prove that lifecycle during cancellation or timeout. Full readers
+stay disk-backed; a move into `/run` tmpfs is not accepted for code reduction.
 
-The [observed composition](../examples/apps-observed-restic.nix) imports the
-baseline Apps composition and preserves its reader preparation and cleanup.
-An ordered native `preStart` hook first records an unsuccessful attempt,
-then the upstream reader preparation runs, then an appended admission check
-validates the prepared copy. Default admission is 64800 seconds (18 hours),
-measured conservatively from capture start. It must be a positive integer no
-greater than the upstream 86400-second ceiling. The arrival budget defaults
-to 86400 seconds and must be positive and at least the admission budget.
+The existing native Restic `RuntimeDirectory` also stores a small ownership flag
+named for the current `INVOCATION_ID`. Preparation creates it after successfully
+creating the disk-backed input, before calling Apps. Cleanup requires that
+current regular flag before deleting an existing input, and removes the flag
+only after successful reader removal. A foreign or unclaimed leftover is
+preserved with an error; it blocks automatic reuse. Interruption before the
+flag is written may leave an unclaimed input for operator review. This guard
+establishes invocation ownership; it does not establish process termination.
+Actual manager lifetime, cancellation and cleanup behavior remain required
+proof in the single [PREDEPLOY matrix](operations.md#required-predeployment-proof).
 
-Native Restic tags each invocation with systemd's `INVOCATION_ID`. Only after
-an exit-0 backup does `postStart` select exactly one repository snapshot with
-that tag and input path, dump its `export.json`, validate schema/app/format and
-capture times, and enforce arrival age. The bounded
-`restic-capture-observe` adapter publishes textfile metrics for each
-application/destination pair. It only validates metadata, reads Restic
-snapshots and metadata, and emits metrics; it supplies no backup or restore
-runner, scheduler, sandbox or persistent recovery ledger. Unknown provenance,
-partial exit-3 backups and invalid or stale metadata cannot refresh success.
+Apps owns consistency, writer quiescence, complete atomic publication,
+preservation of prior activity, reader behavior and retained trusted semantic
+validation. A committed complete capture remains selected after a late
+unit/status failure; cleanup must not delete selected data. Its bounded
+two-producer payload overlap is not a total-host storage cap: independent
+reader copies, wrapper/validator scratch and filesystem overhead need separate
+budgets. Primitives owns generic database helpers. Reliability
+consumes Apps outputs and has no direct Primitives API or schema contract.
 
-The observer reads the repository at successful backup completion. It does
-not continuously verify repository contents, detect later loss before a new
-attempt, or prove database consistency or semantic recovery. Structural and
-full-data checks and manual restores remain separate evidence. The consumer
-owns node-exporter textfile configuration, off-host scraping and alert delivery,
-and capture/backup/check schedules. Four independent monthly manual drills
-use exact successfully observed snapshot IDs and retained trusted validator
-closures. The owner accepted issue 2 without further local-machine or
-virtual-machine testing. Native hook execution and four-pair semantic recovery
-remain unverified; previously cached upstream evidence does not establish
-those release-specific runtime behaviors.
+## Optional destination observation
+
+The observer package captures each job's final `package` explicitly. It uses
+that exact Restic for snapshot selection and metadata reads; there is no
+runtime executable fallback. The only observer modes are `start` and
+`observe`; metadata checks use one pure validation filter.
+
+Before reader preparation, `start` records attempt success 0 and a status-event
+timestamp. Failure to publish that pending state stops preparation. This event
+marks the pending phase, not the actual start of Restic. `observe` does not
+reset the pending event or timestamp on entry.
+
+Native backups tag snapshots with systemd's invocation ID. Only exit 0 reaches
+the success hook; exit 3 can leave a partial snapshot and is not accepted.
+The observer requires exactly one snapshot with the exact invocation tag and
+input path, dumps that immutable snapshot's `export.json`, and validates
+schema 1, matching app/format, capture identity and ordered capture times.
+Arrival age is measured from original `captureStartedAt`. Upload and snapshot
+time cannot make an old capture fresh.
+
+Validated metadata is published before final attempt status. On completion,
+status becomes 1 with its completion-event timestamp. Those writes are not a
+transaction: a final status-write failure can leave newly verified metadata
+published while the latest attempt remains pending and the native unit fails.
+Neither that metadata alone nor a readable snapshot certifies the latest
+attempt. Earlier success metadata remains available after a failed attempt.
+
+The alert group measures elapsed time since the latest attempt status event.
+A new pending event resets its grace intentionally, including retries; it does
+not use a continuous-failure `for` interval. `attemptGracePeriod` remains a
+Prometheus duration with default `2h5m`. Capture-age warning/critical defaults
+remain 64800/86400 seconds. Observation reads metadata at backup completion;
+later repository loss, database consistency and semantic recovery require
+separate evidence. See [operations](operations.md) for metrics and drills.

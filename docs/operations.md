@@ -1,122 +1,150 @@
 # Operations
 
-The [generic NixOS example](../examples/restic.nix) configures two independent
-`services.restic.backups` entries over `/srv/backup-input`, with separate
-structural and full-data checks. Prepare stable application exports there
-through an approved application integration before running a backup. The
-example does not wire native Clan state hooks automatically. Do not point it
-at a live database directory and assume file copying is consistent.
+The [generic example](../examples/restic.nix) configures two independent
+repositories over prepared files under `/srv/backup-input`, with separate
+structural and full-data checks. Prepare consistent application exports first;
+ordinary file copying of a live database does not establish recovery.
+The [README](../README.md#inputs-and-acceptance) identifies the authoritative test
+cohort and acceptance limits.
 
-The [Apps composition](../examples/apps-restic.nix) instead imports the public
-Apps v0.4.0 native example directly and adds separate repository check jobs.
-It has no timers or direct Restic wrappers. Import it from the installation's
-flake scope with the pinned `apps` input:
+## Importing the Apps composition
 
-```nix
-imports = [ (import ./examples/apps-restic.nix { inherit apps; }) ];
-```
+Import the Reliability repository path, including its relative package files,
+rather than copying only the example. The consumer supplies its Apps module
+and enables both export selections. The composition reads public
+`system.build.appsVaultwardenExport` and `system.build.appsLiveSyncExport`;
+it takes no `apps` argument and imports no Apps example.
 
-For stricter capture admission and success-only destination observation, opt
-into [the observed composition](../examples/apps-observed-restic.nix) instead:
-
-```nix
-imports = [
-  (import ./examples/apps-observed-restic.nix {
-    inherit apps;
-    admissionMaxAgeSeconds = 64800;
-    arrivalMaxAgeSeconds = 86400;
-    metricsDirectory = "/var/lib/prometheus-node-exporter-text-files";
-  })
-];
-```
-
-When migrating from the v0.3 baseline, replace its example import with this
-import; it already imports the baseline composition. Preserve the pinned Apps
-input, enabled exports, destination configuration, runtime credentials,
-schedules and retained validator closures. Evaluate before separately
-authorized activation. No snapshots are converted, deleted or newly certified
-by changing the import. Capture schedules remain separate from backup schedules.
-Admission must be a positive integer no greater than 86400; arrival must be
-positive and at least admission. The defaults are 18 hours and 24 hours.
-The native reader hook still runs first; the additional check rejects an old
-prepared copy without replacing or text-patching preparation or cleanup.
-
-Adapt destinations and runtime credential paths before activation. The Apps
-example requires both active selections:
-`clanwright.apps.machines.<machine>.obsidian.export.enable = true` and
-`clanwright.apps.machines.<machine>.vaultwarden.export.enable = true`.
-It composes all four backup jobs; single-app use is not claimed by this example.
-Application enablement alone does not run an export or enable backup timers.
-The consumer must schedule
-captures separately from delivery. A failed export may leave the last good
-capture available only within its original admission-age limit.
-
-The flake pins nixpkgs for its Restic package and local checks. The default
-package and app run Restic directly. To confirm the pinned executable and run
-the checks for this host:
-
-```sh
-nix run --no-write-lock-file . -- version
-nix run --no-write-lock-file .#local-ci
-```
-
-On macOS, `local-ci` runs Darwin checks including `apps-composition`, which
-evaluates the actual x86 Clan application configuration without executing its
-services. The generic Linux `module-eval` derivation remains Linux-only.
-Additional Linux checks can be selected on an approved native ARM builder:
-
-```sh
-nix build --no-write-lock-file --no-link .#checks.aarch64-linux.module-eval .#checks.aarch64-linux.runtime-integration
-nix build --no-write-lock-file --no-link .#checks.aarch64-linux.apps-composition
-nix build --no-write-lock-file --no-link .#checks.aarch64-linux.apps-observed-composition .#checks.aarch64-linux.capture-observation .#checks.aarch64-linux.capture-alerts
-nix build --no-write-lock-file --no-link github:clanwright/apps/af0d564cc388aa21e71e0efa4a622d3d11396ea5#checks.aarch64-linux.recovery-runtime
-```
-
-Use the corresponding local `x86_64-linux` check names on a native x86 Linux
-host; choose the upstream runtime suite that matches the builder's native
-architecture.
-Local checks use fake data and temporary Restic repositories; they do not run
-production backups or commission real destinations. `apps-composition`
-evaluates actual x86 Clan application configuration; its ARM check derivation
-does not run x86 application services. The Apps `recovery-runtime` command is
-an explicitly attributed upstream native ARM suite, not Reliability's own
-test. No virtual machine or QEMU test is run by this repository; existing
-released upstream outputs may be inspected and cited as evidence.
-
-Adapt and import the example into the installation's NixOS configuration. For
-example, after copying it there as `restic.nix`:
+The following expression shows consumer Clan wiring with `apps` and
+`reliability` inputs. Select a producer exposing the public export contract;
+consumer adoption and activation remain separate actions. All installation
+values below are fake placeholders:
 
 ```nix
-{ ... }: {
-  imports = [ ./restic.nix ];
+{ inputs, directory }:
+let apps = inputs.apps;
+in apps.inputs.clan-core.lib.clan {
+  self = {
+    inputs = apps.inputs // {
+      inherit apps;
+      nixpkgs = apps.inputs.apps-nixpkgs;
+    };
+    outPath = directory;
+  };
+  inherit directory;
+  imports = [ apps.clanModules.default ];
+  clanwright.apps.machines.fixture = {
+    installation = {
+      publicIPv4 = "192.0.2.10";
+      certificateEmail = "fixture@example.invalid";
+      privateIngress = {
+        destinationIPv4 = "100.64.0.10";
+        trustedInterfaces = [ "tailscale0" ];
+      };
+    };
+    obsidian = { domain = "notes.example.invalid"; export.enable = true; };
+    vaultwarden = { domain = "vault.example.invalid"; export.enable = true; };
+  };
+  machines.fixture = {
+    imports = [
+      (import (inputs.reliability + "/examples/apps-restic.nix") {
+        observe = true;
+        admissionMaxAgeSeconds = 64800;
+        arrivalMaxAgeSeconds = 86400;
+        metricsDirectory = "/var/lib/prometheus-node-exporter-text-files";
+      })
+    ];
+    nixpkgs.hostPlatform = "x86_64-linux";
+    system.stateVersion = "25.11";
+    sops.age.keyFile = "/var/lib/fixture-sops/age-key.txt";
+    security.acme.certs."notes.example.invalid".webroot = "/var/lib/acme/acme-challenge";
+    security.acme.certs."vault.example.invalid".webroot = "/var/lib/acme/acme-challenge";
+    # Configure four repository/password paths and runtime backend credentials.
+  };
 }
 ```
 
-The generic example creates the standard `restic-backups-primary.service` and
-`restic-backups-secondary.service` backup units, with separate check units.
-On an activated NixOS host, the upstream module's `restic-primary` wrapper
-supplies the configured repository and credential paths for manual Restic
-inspection, such as `restic-primary snapshots`. Its existence does not imply
-that a backup has run. The [NixOS Restic module](https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/backup/restic.nix)
-defines these units and wrappers. The Apps example disables wrappers: start its
-backup jobs through systemd so reader preparation and cleanup remain in the
-native service lifecycle.
+Every active physical certificate also needs an explicit consumer-selected
+native ACME challenge in `security.acme.certs.<certificateId>`: choose exactly
+one of `webroot`, `dnsProvider`, `listenHTTP` or `s3Bucket`. Apps supplies no
+implicit challenge. The local fixture selects webroot for its two fake
+certificates. HTTP routing
+and actual issuance require separately authorized consumer verification;
+local composition checks realize neither.
 
-## Apps readers and validation
+Enable `clanwright.apps.machines.<machine>.obsidian.export.enable` and
+`clanwright.apps.machines.<machine>.vaultwarden.export.enable` in the existing
+Apps configuration. Both exports are required. Application enablement alone
+starts neither export jobs nor backup timers. Configure each destination's
+repository and protected runtime credential paths, and schedule captures
+separately from delivery. The four backup jobs and eight check jobs are manual
+by default, with initialization, pruning and direct wrappers disabled.
 
-The following are manual templates for a separately authorized installation
-or disposable recovery environment; no service is started by reading these
-instructions. Capture both applications independently of destination jobs:
+Omit constructor arguments for the baseline (`observe = false`, admission
+86400 seconds). With observation enabled, admission defaults to 64800 seconds;
+arrival defaults to 86400 seconds. Admission must be positive and no greater
+than 86400; arrival must be positive and at least admission. Preparation calls
+Apps `prepare-reader` once with the selected age. Baseline and observed
+compositions retain independent schedules and consumer overrides.
+Preserve configured destinations, credentials, schedules and retained trusted
+validator closures, then evaluate before separately authorized activation.
+
+## Local checks and executable outputs
+
+The default package/app runs pinned Restic. The observer package exposes
+`restic-capture-observe`; the composition builds it against each backup's final
+Restic package. It has no runtime executable fallback. To inspect the packages
+and run the host's local checks:
+
+```sh
+nix run --no-write-lock-file . -- version
+nix build --no-write-lock-file --no-link .#capture-observation
+nix run --no-write-lock-file .#local-ci
+```
+
+Local verification includes Nix formatting and canonical Linux configuration
+evaluation from
+Darwin, the actual baseline/observed Apps composition, temporary real Restic
+repositories and Prometheus exposition/rule checks. Save readable output and
+whole/stage durations under ignored `.work`. On an approved native ARM Linux
+builder, select the same relevant checks explicitly:
+
+```sh
+nix build --no-write-lock-file --no-link \
+  .#checks.aarch64-linux.module-eval \
+  .#checks.aarch64-linux.apps-composition \
+  .#checks.aarch64-linux.capture-observation \
+  .#checks.aarch64-linux.capture-alerts
+```
+
+Use `x86_64-linux` names on a native x86 builder. These commands do not activate
+services or operate real destinations. No hosted CI or VM/QEMU test is used.
+An explicitly approved ephemeral Apps override must use `--no-write-lock-file`
+and be recorded with its exact revision; its result does not change or certify
+the committed dependency combination.
+
+Local verification does not certify native manager execution, same-host
+semantic validation or ACME routing/issuance. Required unobserved runtime
+cases are centralized in the [PREDEPLOY matrix](#required-predeployment-proof).
+Use the committed [flake.lock](../flake.lock) for the authoritative test cohort;
+an ephemeral override does not qualify another dependency combination.
+
+The generic example may be imported as a standalone NixOS module and provides
+native `restic-primary` inspection wrappers. The Apps composition disables
+wrappers so backup input preparation stays inside the native service lifecycle.
+
+## Captures, readers and delivery
+
+The following templates are for separately authorized installations or
+disposable recovery environments. Capture each application independently:
 
 ```sh
 sudo systemctl start apps-export-vaultwarden.service
 sudo systemctl start apps-export-livesync.service
 ```
 
-After captures have completed, the four native delivery services are manually
-callable as follows; each service performs freshness admission in its own
-reader-preparation hook. This is a separate
-backup-writer action requiring authorization and provisioned repositories:
+After complete captures are available, start the four native backup services
+only with backup-writer authorization and provisioned repositories:
 
 ```sh
 sudo systemctl start restic-backups-vaultwarden-a.service
@@ -125,61 +153,49 @@ sudo systemctl start restic-backups-livesync-a.service
 sudo systemctl start restic-backups-livesync-b.service
 ```
 
-The matched native backup services use the released `prepare-reader` command.
-For a disposable manual reader test, set `EXPORT_PACKAGE` to the retained
-Vaultwarden or LiveSync export package, and supply an absolute, existing empty
-root-owned `0700` `READER_DIRECTORY`:
+Each job prepares an independent reader under its root-owned `0700`
+disk-backed cache directory. `apps-input` and `cache` are siblings. Native
+start/stop timeouts are two hours/two minutes; cleanup follows process
+teardown. Do not read the publisher's `current` pointer or remove a reader
+while any Restic process still uses it.
+
+Preparation claims a newly created input with a small current-invocation flag
+in the existing native Restic `RuntimeDirectory`. Full readers stay on disk.
+Cleanup requires that regular, non-symlink flag and removes it only after
+reader deletion succeeds. A foreign, unclaimed or leftover input is preserved
+and the operation fails; the next attempt refuses it. Interruption before
+claim creation or a cleanup error can require operator review. Establish
+ownership and confirmed process termination before any separately authorized
+cleanup; do not automatically adopt or delete such a leftover.
+
+For a disposable reader test, choose the retained matching `EXPORT_PACKAGE`
+and an absolute, existing empty root-owned `0700` `READER_DIRECTORY`:
 
 ```sh
 sudo "$EXPORT_PACKAGE/bin/prepare-reader" --max-age 86400 "$READER_DIRECTORY"
 ```
 
-Use only a successfully prepared reader as input. Do not back up the publisher
-root or `current` pointer. Failed preparation can leave partial files; the
-owning job removes its reader only after process teardown. Keep its cache in a
-sibling directory outside the input. Capture age is checked before and after
-copying, conservatively from `captureStartedAt`, not capture completion or
-upload time. The `86400`-second admission limit and native service's `2h`
-start timeout do not promise arrival within 24 hours of capture start at a
-slow destination. A stricter delivery-age policy needs a supported
-admission budget and a destination completion check, supplied by the optional
-observed example above. Its success observation rejects arrival older than the
-configured budget; it cannot guarantee timely delivery through an outage.
-Record `export.json` capture ID and capture times alongside each destination's
-snapshot ID and upload completion time.
+Use 64800 instead for observed-default admission. Preparation checks original
+capture-start age before and after copying. Failed preparation can leave
+partial files; do not use them. A failed capture can leave the last good
+capture admissible only within its original age budget. Neither admission
+nor a timeout guarantees arrival through a slow destination or outage.
+Record capture IDs/times, invocation exit status, immutable snapshot ID and
+upload completion independently for each destination.
 
-Treat backup completion separately from repository integrity. Restic 0.19.1
-[documents exit code 3](https://github.com/restic/restic/blob/v0.19.1/doc/075_scripting.rst)
-when a backup cannot read some source data. Such a backup can retain a snapshot
-with readable `export.json` while `restic check` passes. The
-[snapshot format](https://github.com/restic/restic/blob/v0.19.1/internal/data/snapshot.go)
-has no completeness or backup-error flag. Reading metadata from `latest`, or
-checking that snapshot's repository, therefore cannot prove complete delivery.
-Retain the backup invocation's exact exit status and its association with the
-immutable snapshot ID; missing or uncertain provenance stays unknown and must
-not be accepted as success.
+Exit 3 can retain a partial snapshot with readable metadata and a passing
+repository check. Only exit 0 reaches the observation success hook. The
+observer requires exactly one snapshot matching the invocation tag and exact
+input path, dumps its `export.json`, and checks schema, app/format, ordered
+capture times and arrival age from original capture start. Selecting `latest`
+or re-uploading an old capture cannot establish successful fresh delivery.
+Cleanup and failure hooks are not success signals.
 
-The observed example adds a success-only `ExecStartPost` hook and enforces
-exit-0 success rules; exit 3 cannot run the successful observation. Cleanup and
-`postStop` run on failure too and are not success signals. The native backup
-tags its snapshot with `reliability-invocation:${INVOCATION_ID}`. The observer
-requires exactly one snapshot matching that invocation tag and input path,
-then dumps that immutable snapshot's metadata. Schema 1, matching app/format,
-valid capture times and arrival age must all pass before success is refreshed.
-A success hook still does not independently verify all repository contents or
-establish application recovery.
+## Off-host monitoring
 
-## Off-host capture monitoring
-
-The observed example creates the configured administrator-controlled metrics
-directory, but does not enable node exporter or configure Prometheus. Configure
-the consumer's node-exporter textfile collector to read that directory, expose
-it through the approved monitoring path, and scrape it from an independent
-host. Keep alert delivery independent of the protected host. The expected pairs
-are `vaultwarden/a`, `vaultwarden/b`, `livesync/a` and `livesync/b`.
-
-On the protected NixOS host, integrate the textfile collector with the
-installation's existing exporter configuration:
+Observation creates the administrator-controlled metrics directory; it does
+not enable node exporter or configure Prometheus. Integrate the collector in
+the consumer's exporter configuration and scrape it from an independent host:
 
 ```nix
 services.prometheus.exporters.node = {
@@ -191,16 +207,14 @@ services.prometheus.exporters.node = {
 };
 ```
 
-Use the same directory as the observed composition. Configure exporter
-reachability and its scrape access through the installation's approved network
-policy. On the independent Prometheus host, load the
-[capture alert group](../examples/capture-alerts.nix), choosing the actual
-scrape labels and timing budgets:
+Use the same directory as the composition. Configure approved network access,
+matching scrape labels and independent alert delivery. Import the public
+[capture alert group](../examples/capture-alerts.nix) from the repository path:
 
 ```nix
-{ pkgs, ... }:
+{ inputs, pkgs, ... }:
 let
-  captureRules = import ./examples/capture-alerts.nix {
+  captureRules = import (inputs.reliability + "/examples/capture-alerts.nix") {
     job = "reliability";
     instance = "fixture.invalid:9100";
     warningAgeSeconds = 64800;
@@ -217,47 +231,46 @@ in {
 }
 ```
 
-Copy the example into the consumer configuration scope before using that import.
-The fake instance is a placeholder, not a reachable target. Configure the
-matching scrape job and alert routing separately. The group covers an
-unavailable target, missing required metrics for all four pairs, invalid or
-future timestamps, overdue unsuccessful attempts, stale observations, and
-capture-start age warning/critical thresholds. Target and missing-series
-alerts have a five-minute grace. Set observation age for the actual delivery
-schedule; the example's default 900 seconds is illustrative, and the four-hour
-value above also needs a compatible schedule. The attempt grace must cover
-the native two-hour upload timeout plus post-start observation time.
+Replace the fake instance with the consumer's scrape identity. Observation age
+must match the delivery schedule: the rule default is 900 seconds, while the
+four-hour example also needs a compatible schedule. Target/missing-series
+alerts have five-minute grace. The failed-attempt rule uses elapsed time since
+the latest pending status event, with default grace `2h5m`; each new retry
+resets that event's grace intentionally. Keep the Prometheus duration syntax.
+Capture warning/critical defaults are 64800/86400 seconds.
 
 | Metric (labels `app`, `destination`) | Meaning |
 | --- | --- |
-| `reliability_capture_attempt_success` | 0 at attempt start; 1 only after successful destination observation |
-| `reliability_capture_attempt_seconds` | Time of the latest attempt status publication |
-| `reliability_capture_started_seconds` | Capture start from successfully observed repository metadata |
+| `reliability_capture_attempt_success` | 0 before preparation; 1 after successful observation and final status publication |
+| `reliability_capture_attempt_seconds` | Timestamp of the latest status event, pending or complete |
+| `reliability_capture_started_seconds` | Original capture start from verified repository metadata |
 | `reliability_capture_completed_seconds` | Capture completion from that metadata |
-| `reliability_capture_observation_seconds` | Time that destination metadata was successfully observed |
-| `reliability_capture_snapshot_info` | Value 1 with additional `snapshot_id` and `capture_id` labels for the selected immutable snapshot |
+| `reliability_capture_observation_seconds` | Successful metadata observation time |
+| `reliability_capture_snapshot_info` | Value 1 with immutable `snapshot_id` and `capture_id` labels |
 
-A failed attempt leaves its status at 0 and retains the previous successful
-capture/observation timestamps. Before the first success those success series
-are absent. An active attempt also has status 0: this metric does not immediately
-distinguish activity from failure. The alert reports an unsuccessful or
-incomplete attempt only after its configured grace. Re-uploading an old capture
-does not refresh its capture start.
-The success-only observation reads the repository at backup completion; later
-repository loss is not detected until another repository operation. Monitor
-unsuccessful attempts, missing expected pairs, capture age from start, stale
-observations, and off-host scrape `up`/absence separately from repository checks
-and monthly semantic drills. Configure thresholds and expected scrape-target
-labels for the installation and verify alert delivery during commissioning;
-local metrics alone do not establish monitoring acceptance.
+The observer exposes `start APP DESTINATION METRICS_DIRECTORY` and
+`observe APP DESTINATION FORMAT MAX_AGE INPUT METRICS_DIRECTORY INVOCATION
+[RESTIC_OPTIONS...]`. Invoke them through the composed native hooks: `start`
+fails closed before preparation, and `observe` relies on successful backup
+provenance. The observer supplies neither a backup runner nor semantic validation.
 
-## Retained validation closures
+Pending status marks preparation, not actual Restic start. `observe` does not
+reset pending status/time on entry. Failures preserve prior successful
+metadata; before the first success those series are absent. Metadata and final
+status writes are separate: verified metadata may be published before a final
+status failure, while the latest attempt stays 0 and the native unit fails.
+Treat that attempt as uncertified. Successful completion writes 1 and its
+completion-event time. Observation does not detect later repository loss
+without another repository operation. Verify target-loss and alert delivery
+independently during commissioning.
 
-Retain each matching command closure before disabling, removing, or upgrading
-an application. Set the two installable variables to the pinned installation's
-`config.system.build.appsVaultwardenExport` and
-`config.system.build.appsLiveSyncExport` outputs. In a separate recovery
-environment, these persistent output links protect the full closures from GC:
+## Retained trusted validation closures
+
+Before disabling, removing or upgrading an application, retain its matching
+export/validator package. Set the installable variables to the pinned
+consumer's `config.system.build.appsVaultwardenExport` and
+`config.system.build.appsLiveSyncExport`. Persistent output links in a separate
+recovery environment protect their full closures from garbage collection:
 
 ```sh
 mkdir -p "$RECOVERY_ROOT"
@@ -265,108 +278,86 @@ nix build --out-link "$RECOVERY_ROOT/vaultwarden" "$VAULTWARDEN_EXPORT_INSTALLAB
 nix build --out-link "$RECOVERY_ROOT/livesync" "$LIVESYNC_EXPORT_INSTALLABLE"
 ```
 
-Keep these links and the pinned configuration for as long as their stored
-formats remain in retention. Use an absolute persistent `RECOVERY_ROOT` outside
-temporary test storage. `validatorStorePath` in restored metadata is
-provenance only: do not select an executable from it or assume it roots a
-closure. After restoring each of the four app/destination snapshots to a
-disposable root-owned directory, use the retained matching package:
+Use an absolute persistent `RECOVERY_ROOT` outside temporary test storage.
+Keep links and pinned configuration for all retained formats. Restored
+`validatorStorePath` is provenance, not an executable selector or GC root.
+After independently restoring each pair to disposable root-owned storage,
+use the matching retained trusted package:
 
 ```sh
 sudo "$RECOVERY_ROOT/vaultwarden/bin/validate" "$VAULTWARDEN_RESTORED_ARTIFACT"
 sudo "$RECOVERY_ROOT/livesync/bin/validate" "$LIVESYNC_RESTORED_ARTIFACT"
 ```
 
-Run validation as root on a disposable native Linux host with its local
-systemd system manager, cgroup v2, and the same mount/cgroup namespaces. A
-container merely connected to host D-Bus is unsupported. Restored trees and
-parents must be administrator-controlled and quiescent, without nested mounts;
-symlinks, hard-linked files, and special files are rejected. The wrapper owns
-the unprivileged isolation handoff and leaves the source unchanged. On failure,
-interruption, timeout, or uncertain teardown, retain its printed root-only
-scratch directory and reboot that disposable host before manual removal.
+Follow the public Apps recovery/isolation procedure for that exact retained
+release. Do not apply a later same-host procedure to an unqualified older
+input. Use a disposable native Linux environment meeting the owner's
+systemd/cgroup prerequisites. Restored trees and parents must be
+administrator-controlled and quiescent, without nested mounts or unsafe
+links/special files. Semantic failure, timeout or cancellation retain the
+reported root-only scratch and logs. After the wrapper explicitly confirms
+teardown, an administrator may remove that exact scratch without reboot.
+Unconfirmed handoff/teardown retains scratch and the admission barrier; follow
+the matching Apps manual-recovery procedure, without automatic retry or
+removal. Reboot is not normal cleanup. Never validate production directories.
 
-## Acceptance evidence
+## Required predeployment proof
 
-The released [Apps recovery procedure](https://github.com/clanwright/apps/blob/v0.4.0/docs/recovery.md)
-is the source of the application interface. Evidence must retain its release,
-the consumer configuration, logs, duration, capture IDs/times, repository and
-snapshot IDs, and validator closure provenance without credentials.
+The following actual manager and same-host cases are **not observed and required
+before deployment**. They are not covered by local source, build, rendered-hook
+or ordinary process checks. Collect one shared evidence set for the exact
+producer revisions and consumer composition. Apps owns application capture
+and semantic proof; Primitives owns generic database-helper proof. Reliability
+reuses their evidence without duplicating either suite. This matrix does
+not authorize deployment, service execution, new infrastructure or privilege
+changes. Local verification uses the existing native builder; do not create a
+privileged runner, VM/test host or credential/privilege/isolation workaround
+to fill these cases. Their absence does not block source delivery.
 
-All Apps evidence below is bound to v0.4.0 revision
-`af0d564cc388aa21e71e0efa4a622d3d11396ea5` and its
-[published native example](https://github.com/clanwright/apps/blob/v0.4.0/examples/native-restic.nix).
-Reliability's composition check and the reused exact released example's
-end-to-end evidence establish repository integration. Reliability did not
-rerun those upstream end-to-end tests or commission a real installation.
-
-| Owner | Evidence | Coverage and boundary |
+| Owner | Required actual-runtime cases | Required boundary evidence |
 | --- | --- | --- |
-| Reliability | `apps-composition` PASS; `.work/apps-v0.4.0/composition-report.json` records both actual application declarations, four backup jobs and eight independent check jobs | Matched composition evaluation; no service execution |
-| Reliability | Darwin `local-ci` and ARM Linux package, module, Restic and composition checks PASS; `.work/apps-v0.4.0/local-ci.log`, `linux-checks.log` and `linux-outputs.txt` | File transport, structural/full-data checks and restore; not application semantics |
-| Reliability | Issue-2 observed composition evaluation PASS; `.work/issue-2/composition-build.log` | Native hook composition and configuration evaluation; no native lifecycle execution or four-pair semantic recovery |
-| Reliability | Issue-2 Darwin `local-ci` and ARM Linux checks PASS; `.work/issue-2/local-ci.log`, `linux-checks.log` and `linux-outputs.txt` | Real temporary Restic metadata observation, malformed/future/expired rejection, unchanged capture age on re-upload, actual exit-3 fixture, Prometheus exposition parsing and 13 alert scenarios; hook execution remains unproven |
-| Apps | Exact released ARM `recovery-runtime` output reused; all PASS in `.work/apps-v0.4.0/producer-native-check.log` | Disposable owner recovery suite; selected build reused cache rather than freshly executing |
-| Apps | Exact released ARM VM `validator-isolation` output, 111.43 s; `.work/apps-v0.4.0/upstream-isolation-summary.log` | Privileged handoff, cancellation and descendant/isolation behavior; existing release evidence, not rerun here |
-| Apps | Exact released `export-runtime` output: full x86 VM on ARM TCG, 344.16 s; `.work/apps-v0.4.0/upstream-export-summary.log` | Native-service lifecycle, both apps, four app/destination snapshots and semantic recovery; emulation explicitly attributed, not native x86 hardware or a Reliability rerun |
-| Installation owner | Commission each actual destination and retained validation environment separately | Repository access, source freshness, monitoring, recovery credentials and usable application restore in that installation remain outside repository acceptance |
+| Consumer | Per-certificate native ACME challenge routing and issuance | Each active physical certificate has its selected challenge and successful routing/issuance evidence; pure composition does not prove certificate delivery |
+| Reliability | Successful and failed preparation; upload error and exit 3; cancellation during preparation/upload and `postStart` | Native unit result, exact invocation/snapshot provenance and pending/success status; unsuccessful or cancelled attempts are not certified |
+| Reliability | Stop, timeout, TERM/KILL and surviving descendants | All reader processes and descendants stop **before** disk-backed reader deletion; cleanup order is observed through the actual manager |
+| Reliability | Small ownership-flag `RuntimeDirectory` lifetime | Root ownership/mode, current invocation ID, flag creation/removal and manager directory teardown; no flag from another attempt grants deletion authority |
+| Reliability | Cleanup error followed by next attempt; unclaimed/foreign leftovers; concurrent destinations a/b | Record failed deletion and retained input; the runtime flag may disappear during native teardown. The next attempt refuses leftovers, foreign input is preserved and each destination's reader remains independent |
+| Apps | Effective database peer/identity, private file descriptors, database sockets and ports | Capture uses its explicit effective DB/socket/port and private output descriptor. Disposable validation is confined to its isolated database, without production access or unintended descriptors |
+| Apps | Initially active and inactive applications; quiescence and resumption | Prior activity is recorded before any app mutation; failure before that record grants no restoration/cleanup authority. Writer quiescence covers capture and automatic activation paths, original activity is restored and inactive applications are not accidentally started |
+| Apps | Capture commit/current-pointer publication and reader acquisition overlapping publication/next prepare/reclamation; bounded two-producer overlap | Precommit failure preserves the prior complete export; completed atomic commit keeps the new complete export selected after late unit/status failure. Pointer-aware finalization never deletes selected data. Source reclamation follows completed independent reader acquisition; no third producer-sized payload, including temporary producer workspace, is allocated before successful reclaim |
+| Apps | Full-attempt admission, retained trusted same-host validation confinement/resource limits, TERM/KILL, uncertain teardown and representative application continuity | Admission spans the full attempt; actual confinement and resource bounds apply to retained validation. Representative app behavior remains usable after successful, failed or cancelled validation; uncertain teardown preserves the admission barrier/scratch and prevents unsafe retry or unconfirmed continuation |
 
-The already-realised upstream outputs inspected without a new build were
-`/nix/store/75cy2q8q9f864xqrvbliyxznjq0i9g66-vm-test-run-apps-export-runtime`
-and `/nix/store/9sqlc1d6nld6s5sdwfpia63qlj5wl7i6-vm-test-run-apps-validator-isolation`.
-Their existing logs reported the durations above. The matched composition
-report came from
-`/nix/store/ckzyf987vk9xywjgkr5g3ljfy00x0dl0-reliability-apps-composition/report.json`.
-The reused native recovery log came from
-`/nix/store/zqqvvv7vzra9z7jkavv57i75z9xpyrpd-clanwright-apps-recovery-runtime/check.log`.
+The two-producer bound covers producer payload trees, not total host storage.
+Budget independent reader copies, wrapper/validator scratch and filesystem
+overhead separately.
 
-Commissioning must still record successful and failed/interrupted captures,
-initially stopped applications, slow readers during replacement, independent
-destination failure/retry, and metadata-preserving delivery. Record capture
-age independently of upload and snapshot age; test missing, malformed, future
-and stale admission, including the last good capture after failure. Keep
-structural/full-data integrity evidence separate from disposable semantic
-validation of both applications from both repositories. These are installation
-acceptance responsibilities, not an additional mandatory native-hardware gate
-for the earlier issue-1 repository integration. For issue 2, the owner accepted
-implementation and the documented manual procedure without further
-local-machine or virtual-machine testing. This supersedes the issue's original
-pre-release native runtime gate; it does not turn unexecuted checks into passing
-evidence. Native hook execution, installation monitoring acceptance and monthly
-four-pair semantic drills were not verified by this release. Perform installation
-commissioning separately with the documented Linux root/systemd/cgroup v2
-prerequisites; cached upstream results do not establish that acceptance.
+Retain exact revisions, rendered configuration, logs, whole/stage durations,
+capture/invocation/snapshot IDs, process-stop and cleanup ordering, validation
+results and explicit `pass`, `fail` or `unknown` outcomes. Unexecuted or
+uncertain cases remain open predeployment requirements. Reuse unchanged
+passing local evidence without relabeling it runtime acceptance.
 
-`disabled-retained` keeps opted-in native export state but withdraws exporters
-and command outputs. Turning exports off or selecting `null` does not delete
-local state or historical backups. Preserve the matching rooted closure first.
-The v0.4.0 formats remain `vaultwarden-pg18-files-v1` and
-`livesync-couchdb3-v1`; historical captures without `export.json` can use a
-compatible semantic validator but are not automatically admitted as new native
-exports. Preserve application/database versions for retained formats and test
-database-major migrations separately; do not relabel an old artifact.
+## Commissioning and four independent monthly drills
 
-## Commissioning and routine checks
+Review stable sources and valuable exclusions first. Provision repositories
+and runtime credentials separately; initialization remains an explicit
+operator action. Evaluate before authorizing activation. Record successful,
+failed and interrupted captures, prior stopped-service behavior, replacement
+while readers are active, independent destination failure/retry and freshness
+rejection. Preserve configuration/revisions, whole/stage durations, logs,
+capture and snapshot identities and trusted closure provenance without secrets.
 
-1. Review source paths and the application-specific export procedure. Confirm
-   exports complete before backup services start. Record excluded valuable
-   state explicitly.
-2. Provision each encrypted repository and its runtime credentials separately.
-   The example sets `initialize = false`, so repository initialization is an
-   explicit operator action. Keep credential recovery material off the host.
-3. Evaluate the NixOS configuration, then authorize activation separately.
-   Observe a completed backup and a current snapshot at **each** destination.
-   A success at one destination says nothing about the other.
-4. Run a structural check and a full-data read for each repository. Restore
-   each to disposable storage and verify application semantics with the
-   compatible application handler. Monitor backup age and a stopped host
-   externally.
+Run structural and full-data checks independently for each backup job. Check
+services use suffixes `-structure` and `-full`, for example:
 
-The following Restic commands are templates for an operator-approved
-repository. Set `RESTIC_REPOSITORY` to its exact location and
-`RESTIC_PASSWORD_FILE` to a protected runtime path before using them. Supply
-backend credentials through the approved runtime environment. They are not
-run by local checks:
+```sh
+sudo systemctl start restic-backups-vaultwarden-a-structure.service
+sudo systemctl start restic-backups-vaultwarden-a-full.service
+```
+
+Repeat for `vaultwarden-b`, `livesync-a` and `livesync-b`. For manual inspection
+of an operator-approved repository, set `RESTIC_REPOSITORY`, a protected
+`RESTIC_PASSWORD_FILE` and the approved backend environment. Use the matching
+pinned Restic; these commands are not production actions run by local checks:
 
 ```sh
 restic snapshots
@@ -379,72 +370,52 @@ sudo install -d -m 0700 "$RESTORE_ROOT"
 sudo restic restore "$SNAPSHOT_ID" --target "$RESTORE_ROOT"
 ```
 
-Set `SNAPSHOT_ID` to an ID from that repository's snapshot listing, and
-inspect its paths before restoring. For an acceptance drill, select an
-immutable snapshot with retained evidence that its exact backup invocation
-exited 0. In the observed composition, retain the successful observation and
-its invocation provenance, and select its `snapshot_id` from
-`reliability_capture_snapshot_info`; do not select `latest` merely because it
-contains `export.json`. Set `SNAPSHOT_EXPORT_PATH` to the selected snapshot's
-exact `export.json` path after inspecting its tree. Supply an absolute,
-fresh disposable root-owned `RESTORE_ROOT` and use the approved root Restic
-environment for restore; never overwrite production or an existing drill.
-`check` tests repository structure; `check --read-data` reads repository data.
-Neither substitutes for an application restore. See the
-[Restic restore documentation](https://restic.readthedocs.io/en/stable/050_restore.html).
+Select an immutable snapshot with retained exact exit-0 invocation evidence.
+With observation, retain its successful observation and invocation provenance;
+select the recorded `snapshot_id`, not `latest`. Inspect its exact metadata
+path and set `SNAPSHOT_EXPORT_PATH`. Use a fresh absolute disposable root-owned
+`RESTORE_ROOT` and the approved root Restic environment. Never overwrite
+production or an earlier drill. Structural/full-data checks do not replace
+application validation.
 
-Perform a separately authorized monthly manual drill for each of the four
-application/destination pairs. Restore the selected snapshot into disposable
-storage and follow the retained-closure validation and isolation instructions
-above. Record each pair independently, including failures and incomplete drills:
+Perform a separately authorized monthly restore and semantic drill for each
+pair, using the retained trusted closure and owner isolation procedure:
 
-| Pair | Status | Snapshot ID | Capture ID | Capture/upload/drill times | Trusted closure | Result/logs/scratch |
+| Pair | Status | Snapshot ID | Capture ID | Capture/upload/drill times | Trusted closure | Logs/scratch |
 | --- | --- | --- | --- | --- | --- | --- |
 | Vaultwarden / a | pending | — | — | — | — | — |
 | Vaultwarden / b | pending | — | — | — | — | — |
 | LiveSync / a | pending | — | — | — | — | — |
 | LiveSync / b | pending | — | — | — | — | — |
 
-Replace these empty record rows only with evidence from that month's drill.
+Record repository identity, invocation exit provenance, restored capture
+start/completion, upload completion, drill start/end/duration, restore/check/
+validation results, pinned configuration and scratch teardown outcome. Replace
+rows only with evidence from that month's drill. Use `pass`, `fail` or
+`unknown`; uncertain selection, validation or teardown does not satisfy
+acceptance. Preserve failed/uncertain scratch. A pass for one pair covers
+neither another pair nor monitoring acceptance.
 
-| Record | Required evidence |
-| --- | --- |
-| Selection and status | Application/destination pair, repository identity, immutable snapshot ID, exact backup exit-0 provenance, and drill status (`pass`, `fail` or `unknown`) |
-| Capture and timing | Restored `export.json` capture ID, capture start/completion, upload completion, drill start/end and duration |
-| Recovery | Trusted retained validator closure and pinned configuration, restore/check/validation logs and results, and scratch-directory path and teardown outcome |
+## Retained recovery points and retention
 
-Use `unknown` when snapshot provenance, validation or teardown is uncertain;
-it does not satisfy acceptance. Retain scratch on failed or uncertain validation
-and follow the reboot-before-removal instruction above. Successful delivery or
-a drill for one pair does not cover another pair. This procedure defines the
-manual evidence to collect; no monthly drill or installation monitoring
-acceptance has been executed by documenting it.
+Changing this composition does not convert, delete or certify snapshots.
+Preserve historical repositories, credentials, configuration and compatible
+pinned Restic/validation closures. Inspect and restore historical recovery
+points before retiring an older recovery path. Preserve state and closure
+roots before disabling exports or removing a selection; retained historical
+formats need their matching application/database versions. Test database-major
+migrations separately and never relabel old artifacts.
 
-## Breaking migration and retention
-
-The old `clanwright.reliability` configuration and `reliability` CLI have no
-counterparts in this flake. Preserve the previous repositories, snapshots,
-credential paths, and configuration. Keep a compatible pinned Restic version
-available for manual access to historical snapshots. Inspect `restic snapshots`
-and `restic ls` for each old destination, then restore selected snapshots to
-disposable storage and verify their contents and application behavior. Do not
-assume the new example reads the former generation ledger or imports old
-snapshot lineages. Switch to new native jobs only after the new sources and
-restore procedure are understood. No old backup data is removed by this change.
-
-The example leaves `pruneOpts = [ ]`, so no automatic `forget --prune` policy
-is configured. For a proposed retention policy, first inspect the exact
-repository and its snapshot groups, then run a **dry run** with reviewed
-`--keep-*` options, for example:
+No automatic forget/prune policy is configured. Inspect each repository and
+snapshot grouping before reviewing a proposed policy with a dry run:
 
 ```sh
 restic snapshots
 restic forget --dry-run --keep-daily 7 --keep-weekly 4 --keep-monthly 12
 ```
 
-This only previews a possible policy. Enabling `forget` or `prune` can remove
-recovery points and needs separate approval after destination-specific restore
-evidence. Provider version-history lifecycle is a separate decision; see
-[security and recovery](security.md). No repository initialization, deletion,
-restore into production, activation, or provider change is authorized by these
-instructions.
+This previews a possible policy. Real forget/prune needs separate approval
+after destination-specific recovery evidence. Provider version-history
+lifecycle is a separate decision; see [security](security.md). Documentation
+authorizes no initialization, deletion, production restore, deployment,
+provider, credential or secret mutation.

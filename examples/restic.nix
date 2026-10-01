@@ -1,6 +1,6 @@
 { ... }:
 
-# Generic file-backup example, not the pending Apps native integration.
+# Generic file-backup example for externally prepared stable input.
 # Its calendars do not enforce export readiness, capture freshness or reader
 # lifetime. The producer must keep the selected files stable until every reader
 # finishes; do not replace/remove them merely because a newer export is ready.

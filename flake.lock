@@ -8,17 +8,17 @@
         "primitives": "primitives"
       },
       "locked": {
-        "lastModified": 1790538497,
-        "narHash": "sha256-f4QQGgtVs9Lap3+82XwBn4q7BsxPOHUL07UpSk6OJ60=",
+        "lastModified": 1790843769,
+        "narHash": "sha256-vFJpnjLPecycoJntN8/3nuBb7tHlk9hkAUzonR0kCtM=",
         "owner": "clanwright",
         "repo": "apps",
-        "rev": "af0d564cc388aa21e71e0efa4a622d3d11396ea5",
+        "rev": "aa63cbe9f73b1af6360499cedef326e813da700b",
         "type": "github"
       },
       "original": {
         "owner": "clanwright",
         "repo": "apps",
-        "rev": "af0d564cc388aa21e71e0efa4a622d3d11396ea5",
+        "rev": "aa63cbe9f73b1af6360499cedef326e813da700b",
         "type": "github"
       }
     },
@@ -330,17 +330,17 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1790529449,
-        "narHash": "sha256-jp/pruA3qXBBATTgn+3Q9k6N/ugJcMw9HEdSGxYUokU=",
+        "lastModified": 1790798156,
+        "narHash": "sha256-3COGQWxuPGfBFX1tRqCqkuxHgLYyAGqSrdZn5L9/x9A=",
         "owner": "clanwright",
         "repo": "network",
-        "rev": "efeaa948d58e678d27a5a812f0293a3ada71c681",
+        "rev": "9421c102c9536a4345446a74aaaeb603cb6a23e3",
         "type": "github"
       },
       "original": {
         "owner": "clanwright",
         "repo": "network",
-        "rev": "efeaa948d58e678d27a5a812f0293a3ada71c681",
+        "rev": "9421c102c9536a4345446a74aaaeb603cb6a23e3",
         "type": "github"
       }
     },
@@ -527,17 +527,17 @@
         "nixpkgs": "nixpkgs_4"
       },
       "locked": {
-        "lastModified": 1790511594,
-        "narHash": "sha256-qTDq/xRe11XdtZs4hIwwKcW25CiZmQpGua1m9JNDVUc=",
+        "lastModified": 1790798352,
+        "narHash": "sha256-bNooAd5dANMhvoMfgeB1usU1+f9Mu71w3g1g0T10V6U=",
         "owner": "clanwright",
         "repo": "primitives",
-        "rev": "9dd13dd84479914fe8465ff6f77d2bb1f8034e2e",
+        "rev": "8e64d6c436af087684acaed0cc3190a3062c2233",
         "type": "github"
       },
       "original": {
         "owner": "clanwright",
         "repo": "primitives",
-        "rev": "9dd13dd84479914fe8465ff6f77d2bb1f8034e2e",
+        "rev": "8e64d6c436af087684acaed0cc3190a3062c2233",
         "type": "github"
       }
     },

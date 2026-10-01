@@ -28,7 +28,7 @@ let
   series = name: attrs: value: {
     series = "${name}{${labels attrs}}";
     # Evaluate at Unix time 108000s; repeated samples keep the scrape current.
-    values = "${toString value}x32";
+    values = "${toString value}x40";
   };
   baseline = {
     attempt_success = 1;
@@ -86,6 +86,17 @@ let
       exp_alerts = alerts.${rule.alert} or [ ];
     }) group.rules;
   };
+  attemptSeries =
+    suffix:
+    "reliability_capture_${suffix}{${
+      labels (
+        target
+        // {
+          app = "vaultwarden";
+          destination = "a";
+        }
+      )
+    }}";
   graceInputs = map (
     sample:
     sample
@@ -99,7 +110,20 @@ let
           }
         )
       }}"
-    ) { values = "1x26 0x6"; }
+    ) { values = "1x26 0x14"; }
+    // pkgs.lib.optionalAttrs (sample.series == attemptSeries "attempt_seconds") {
+      values = "107200x26 107820x14";
+    }
+  ) (input (_: baseline));
+  transitionInputs = map (
+    sample:
+    sample
+    // pkgs.lib.optionalAttrs (sample.series == attemptSeries "attempt_success") {
+      values = "0x8 1x31";
+    }
+    // pkgs.lib.optionalAttrs (sample.series == attemptSeries "attempt_seconds") {
+      values = "105000x1 106320x6 106740x31";
+    }
   ) (input (_: baseline));
   cases = [
     (test "all four pairs healthy" (up 1 ++ input (_: baseline)) { })
@@ -158,7 +182,7 @@ let
         up 1
         ++ input (altered {
           attempt_success = 0;
-          attempt_seconds = 107900;
+          attempt_seconds = 107200;
         })
       )
       {
@@ -175,9 +199,59 @@ let
           {
             eval_time = "32m";
             alertname = "ReliabilityCaptureAttemptFailed";
+            exp_alerts = [ ];
+          }
+          {
+            eval_time = "33m";
+            alertname = "ReliabilityCaptureAttemptFailed";
             exp_alerts = pairAlert "ReliabilityCaptureAttemptFailed";
           }
         ];
+      }
+    )
+    (
+      let
+        transition = test "old failure clears on new event, gets full grace, then succeeds" (
+          up 1 ++ transitionInputs
+        ) { };
+      in
+      transition
+      // {
+        alert_rule_test =
+          transition.alert_rule_test
+          ++
+            map
+              (item: {
+                eval_time = item.time;
+                alertname = "ReliabilityCaptureAttemptFailed";
+                exp_alerts = if item.fires then pairAlert "ReliabilityCaptureAttemptFailed" else [ ];
+              })
+              [
+                {
+                  time = "1m";
+                  fires = true;
+                }
+                {
+                  time = "2m";
+                  fires = false;
+                }
+                {
+                  time = "6m";
+                  fires = false;
+                }
+                {
+                  time = "7m";
+                  fires = false;
+                }
+                {
+                  time = "8m";
+                  fires = true;
+                }
+                {
+                  time = "9m";
+                  fires = false;
+                }
+              ];
       }
     )
     (test "stale observation despite fresh scrape"
@@ -240,6 +314,6 @@ pkgs.runCommand "reliability-capture-alerts" { nativeBuildInputs = [ pkgs.promet
   promtool --version > "$out/promtool-version.txt"
   promtool check rules ${rules} ${escaped} > "$out/check-rules.txt" 2>&1
   cat "$out/check-rules.txt"
-  promtool test rules ${fixtures} > "$out/test-rules.txt" 2>&1
+  promtool test rules ${fixtures} > "$out/test-rules.txt" 2>&1 || { cat "$out/test-rules.txt"; exit 1; }
   cat "$out/test-rules.txt"
 ''

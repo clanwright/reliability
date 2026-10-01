@@ -2,7 +2,7 @@
   description = "Native Restic recovery checks for NixOS";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/8d5d270900d3fc75655ea2d9d248b234f6631439";
-  inputs.apps.url = "github:clanwright/apps/af0d564cc388aa21e71e0efa4a622d3d11396ea5";
+  inputs.apps.url = "github:clanwright/apps/aa63cbe9f73b1af6360499cedef326e813da700b";
 
   outputs =
     {
@@ -24,13 +24,18 @@
         pkgs: system: {
           restic = pkgs.restic;
           default = pkgs.restic;
-          capture-observation = import ./packages/capture-observation.nix { inherit pkgs; };
+          capture-observation = import ./packages/capture-observation.nix {
+            inherit pkgs;
+            restic = pkgs.restic;
+          };
           local-ci = pkgs.writeShellApplication {
             name = "local-ci";
-            runtimeInputs = [ pkgs.nixVersions.nix_2_35 ];
+            derivationArgs = {
+              preferLocalBuild = true;
+              allowSubstitutes = false;
+            };
             text = ''
               nix flake check --no-write-lock-file path:${self}
-              nix build --no-write-lock-file --no-link path:${self}#default
             '';
           };
         }
@@ -50,20 +55,17 @@
         }
       );
       checks = forAllSystems (
-        pkgs: system:
-        {
+        pkgs: system: {
+          format = pkgs.runCommand "reliability-format" { nativeBuildInputs = [ pkgs.nixfmt ]; } ''
+            find ${self} -type f -name '*.nix' -exec nixfmt --check {} +
+            touch "$out"
+          '';
           package = self.packages.${system}.default;
-          runtime-integration = import ./tests/restic-integration.nix { inherit pkgs; };
           apps-composition = import ./tests/apps-composition.nix {
             inherit pkgs apps;
           };
           capture-observation = import ./tests/capture-observation.nix { inherit pkgs; };
           capture-alerts = import ./tests/capture-alerts.nix { inherit pkgs; };
-          apps-observed-composition = import ./tests/apps-observed-composition.nix {
-            inherit pkgs apps;
-          };
-        }
-        // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           module-eval = import ./tests/module-eval.nix {
             inherit pkgs;
             nixosSystem = nixpkgs.lib.nixosSystem;

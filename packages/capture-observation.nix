@@ -1,11 +1,10 @@
-{ pkgs }:
+{ pkgs, restic }:
 
 pkgs.writeShellApplication {
   name = "restic-capture-observe";
-  runtimeInputs = with pkgs; [
-    coreutils
-    jq
-    restic
+  runtimeInputs = [
+    pkgs.coreutils
+    pkgs.jq
   ];
   text = ''
     # This observes a successful native Restic hook; it never runs a backup.
@@ -14,11 +13,12 @@ pkgs.writeShellApplication {
     temporary=()
     cleanup() {
       if (( ''${#temporary[@]} )); then
-        rm -f -- "''${temporary[@]}"
+        rm -f -- "''${temporary[@]}" 2>/dev/null
       fi
     }
     trap cleanup EXIT
-    fail() { printf '%s\n' 'capture observation rejected' >&2; exit 1; }
+    stage='arguments'
+    fail() { printf 'capture observation rejected: %s\n' "$stage" >&2; exit 1; }
     label() { [[ "$1" =~ ^[a-z][a-z0-9_-]*$ ]] || fail; }
     age() {
       [[ "$1" =~ ^[1-9][0-9]*$ ]] || fail
@@ -26,29 +26,19 @@ pkgs.writeShellApplication {
     }
     metrics_directory() { [[ "$1" == /* && -d "$1" ]] || fail; }
     new_file() {
-      temp_file=$(mktemp "$1") || fail
+      temp_file=$(mktemp "$1" 2>/dev/null) || fail
       temporary+=("$temp_file")
     }
     attempt() {
       new_file "$metrics/.capture-attempt.XXXXXX"
       printf 'reliability_capture_attempt_success{app="%s",destination="%s"} %s\nreliability_capture_attempt_seconds{app="%s",destination="%s"} %s\n' \
-        "$app" "$destination" "$1" "$app" "$destination" "$attempt_time" > "$temp_file"
-      chmod 644 "$temp_file"
-      mv -f -- "$temp_file" "$metrics/$app.$destination.attempt.prom"
+        "$app" "$destination" "$1" "$app" "$destination" "$attempt_time" 2>/dev/null > "$temp_file" || fail
+      chmod 644 "$temp_file" 2>/dev/null || fail
+      mv -Tf -- "$temp_file" "$metrics/$app.$destination.attempt.prom" 2>/dev/null || fail
     }
     validate() {
-      jq -se --arg app "$app" --arg format "$format" --argjson now "$observed" --argjson age "$max_age" '
-        def integer: type == "number" and . == floor and . > 0 and . <= 9007199254740991;
-        length == 1 and (.[0] |
-          type == "object" and
-          .schemaVersion == 1 and
-          .appId == $app and .formatVersion == $format and
-          (.captureId | type == "string" and length > 0) and
-          (.validatorStorePath | type == "string" and length > 0) and
-          (.captureStartedAt | integer) and (.captureCompletedAt | integer) and
-          .captureStartedAt <= .captureCompletedAt and
-          .captureCompletedAt <= $now and $now - .captureStartedAt <= $age)
-      ' "$1" >/dev/null 2>/dev/null || fail
+      jq -se --arg app "$app" --arg format "$format" --argjson now "$observed" --argjson age "$max_age" \
+        -f ${./capture-metadata.jq} "$1" >/dev/null 2>/dev/null || fail
     }
 
     [[ $# -ge 1 ]] || fail
@@ -58,15 +48,9 @@ pkgs.writeShellApplication {
         [[ $# == 3 ]] || fail
         app=$1; destination=$2; metrics=$3
         label "$app"; label "$destination"; metrics_directory "$metrics"
-        attempt_time=$(date +%s)
+        stage='attempt-start'
+        attempt_time=$(date +%s 2>/dev/null) || fail
         attempt 0
-        ;;
-      admit)
-        [[ $# == 4 ]] || fail
-        app=$1; format=$2; max_age=$3; metadata=$4
-        label "$app"; age "$max_age"
-        observed=$(date +%s)
-        validate "$metadata"
         ;;
       observe)
         [[ $# -ge 7 ]] || fail
@@ -74,15 +58,14 @@ pkgs.writeShellApplication {
         input=$5; metrics=$6; invocation=$7
         shift 7
         label "$app"; label "$destination"; metrics_directory "$metrics"
-        attempt_time=$(date +%s)
-        attempt 0
         age "$max_age"
         [[ "$input" == /* && "$invocation" =~ ^[0-9a-f]{32}$ ]] || fail
         tag="reliability-invocation:$invocation"
-        restic_command="''${RESTIC_OBSERVER_RESTIC:-restic}"
+        stage='snapshot-query'
         new_file "''${TMPDIR:-/tmp}/capture-snapshots.XXXXXX"
         snapshots=$temp_file
-        "$restic_command" "$@" snapshots --json --tag "$tag" --path "$input" > "$snapshots" 2>/dev/null || fail
+        ${restic}/bin/restic "$@" snapshots --json --tag "$tag" --path "$input" 2>/dev/null > "$snapshots" || fail
+        stage='snapshot-identity'
         snapshot_id=$(jq -ser --arg input "$input" --arg tag "$tag" '
           if length == 1 and (.[0] | type == "array" and length == 1) then .[0][0]
           else error("snapshot cardinality") end |
@@ -90,11 +73,14 @@ pkgs.writeShellApplication {
             and (.id | type == "string" and test("^[0-9a-f]{64}$"))
           then .id else error("snapshot identity") end
         ' "$snapshots" 2>/dev/null) || fail
+        stage='metadata-read'
         new_file "''${TMPDIR:-/tmp}/capture-metadata.XXXXXX"
         metadata=$temp_file
-        "$restic_command" "$@" dump "$snapshot_id" "$input/export.json" > "$metadata" 2>/dev/null || fail
-        observed=$(date +%s)
+        ${restic}/bin/restic "$@" dump "$snapshot_id" "$input/export.json" 2>/dev/null > "$metadata" || fail
+        observed=$(date +%s 2>/dev/null) || fail
+        stage='metadata-validation'
         validate "$metadata"
+        stage='metadata-publication'
         new_file "$metrics/.capture-success.XXXXXX"
         jq -r --arg app "$app" --arg destination "$destination" --arg snapshot "$snapshot_id" --argjson observed "$observed" '
           def escape: gsub("\\\\"; "\\\\") | gsub("\""; "\\\"") | gsub("\n"; "\\n");
@@ -104,9 +90,13 @@ pkgs.writeShellApplication {
           "reliability_capture_observation_seconds{" + $labels + "} " + ($observed | tostring),
           "reliability_capture_snapshot_info{" + $labels + ",snapshot_id=\"" + $snapshot +
             "\",capture_id=\"" + (.captureId | escape) + "\"} 1"
-        ' "$metadata" > "$temp_file" 2>/dev/null || fail
-        chmod 644 "$temp_file"
-        mv -f -- "$temp_file" "$metrics/$app.$destination.success.prom"
+        ' "$metadata" 2>/dev/null > "$temp_file" || fail
+        chmod 644 "$temp_file" 2>/dev/null || fail
+        mv -Tf -- "$temp_file" "$metrics/$app.$destination.success.prom" 2>/dev/null || fail
+        # Metadata publication and completed-attempt publication are separate.
+        # A final status failure leaves verified metadata and the pending event.
+        stage='attempt-completion'
+        attempt_time=$(date +%s 2>/dev/null) || fail
         attempt 1
         ;;
       *) fail ;;
