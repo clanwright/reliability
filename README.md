@@ -1,3 +1,7 @@
+> **Archived.** This module now lives in the Clanwright monorepository as
+> `bricks/reliability` (https://github.com/ibelyasov/clanwright) and is no longer
+> developed or released here.
+
 # Reliability
 
 Reliability is a small [MIT-licensed](LICENSE) Nix flake for native
